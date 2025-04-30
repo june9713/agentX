@@ -207,7 +207,7 @@ def start_browser(profile_name="Profile 1", position=(0, 0), size=(1024, 768)):
         tab.Network.enable()
         
         # ChatGPT 페이지로 직접 이동
-        url = "https://chatgpt.com/?model=gpt-4o"
+        url = "https://chatgpt.com/?model=o4-mini-high"#
         logger.info(f"Navigating to {url}")
         tab.Page.navigate(url=url, _timeout=5)  # 타임아웃 감소 (10초 → 5초)
         
