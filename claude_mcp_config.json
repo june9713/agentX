@@ -1,0 +1,59 @@
+{
+  "server": {
+    "url": "ws://localhost:8765",
+    "connection_timeout": 5000,
+    "reconnect_attempts": 3,
+    "reconnect_delay": 1000
+  },
+  "handlers": {
+    "chrome": {
+      "enabled": true,
+      "connection": {
+        "url": "http://localhost:9222",
+        "debug": false
+      }
+    },
+    "excel": {
+      "enabled": true,
+      "connection": {
+        "create_new_workbook": true
+      }
+    }
+  },
+  "logging": {
+    "level": "info",
+    "file": "claude_mcp.log",
+    "console": true
+  },
+  "security": {
+    "verify_ssl": false,
+    "require_authentication": false
+  },
+  "commands": {
+    "chrome": {
+      "navigate": {
+        "url": "https://claude.ai"
+      },
+      "eval": {
+        "return_by_value": true
+      },
+      "screenshot": {
+        "format": "png",
+        "quality": 100
+      }
+    },
+    "excel": {
+      "default_sheet": "Sheet1"
+    }
+  },
+  "session": {
+    "auto_connect": true,
+    "timeout": 300000,
+    "keep_alive": true
+  },
+  "advanced": {
+    "message_size_limit": 10485760,
+    "debug_mode": false,
+    "performance_metrics": false
+  }
+} 
