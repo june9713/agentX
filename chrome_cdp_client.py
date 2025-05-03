@@ -16,6 +16,7 @@ import logging
 from cmd_manager import *
 
 
+
 # 로깅 설정
 logging.basicConfig(
     level=logging.INFO,
@@ -1062,4 +1063,5 @@ def newmain():
             pass
 
 if __name__ == "__main__":
+    os.chdir("d:")
     newmain()

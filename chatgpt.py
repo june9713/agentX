@@ -21,7 +21,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("myagent.log"),
+        logging.FileHandler("myagent.log", encoding="utf-8"),
         logging.StreamHandler()
     ]
 )
@@ -577,67 +577,88 @@ def get_last_python_code(tab):
         logger.error(f"Error getting Python code: {e}")
         return ""
 
-def main():
+def safe_close_tab(browser, tab):
+    """
+    안전하게 브라우저 탭을 닫는 함수입니다.
+    JSON 파싱 오류 및 관련 예외를 방지합니다.
+    """
     try:
-        # 브라우저 시작 및 페이지 로드 - 더 작은 사이즈로 시작 (메모리 사용 최적화)
-        browser, tab = start_browser(
-            profile_name="Profile 1", 
-            position=(10, 10), 
-            size=(900, 700)  # 사이즈 감소 (1024x800 → 900x700)
-        )
-        
-        if not browser or not tab:
-            logger.error("Failed to start browser or open tab")
-            return
-            
-        # 페이지 로드 확인 - 더 짧은 타임아웃
-        if not check_page_loaded(tab, timeout=15):  # 타임아웃 감소 (기본값 30초 → 15초)
-            logger.error("Page load check failed")
-            return
-            
-        # 테스트 쿼리 전송
-        logger.info("Sending test query...")
-        send_query(tab, "오늘의 날씨에 대해서 알려주세요:")
-        
-        # 이미지 파일 첨부 테스트 - 대기 시간 감소
-        time.sleep(0.5)  # 대기 시간 감소 (1초 → 0.5초)
-        #file_path = "capture.png"  # 파일 경로 설정
-        #if os.path.exists(file_path):
-        #    logger.info(f"Attaching file: {file_path}")
-        #    simulate_paste_local_file(file_path, tab)
-        #    time.sleep(1)  # 대기 시간 감소 (2초 → 1초)
-        
-        # 쿼리 전송
-        #send_query(tab, "")  # 이미 텍스트 영역에 내용이 있으므로 빈 텍스트로 전송
-        
-        # 응답 대기 - 더 짧은 타임아웃
-        if not wait_for_response_complete(tab, timeout=180):  # 타임아웃 감소 (기본값 300초 → 180초)
-            logger.warning("Response waiting timed out")
-        
-        # 코드 가져오기
-        python_code = get_last_python_code(tab)
-        if python_code:
-            # 결과 코드 저장
-            with open("fixed_code.py", "w", encoding="utf-8") as f:
-                f.write(python_code)
-            logger.info("Code saved to fixed_code.py")
-        
-        # 브라우저 정리
-        logger.info("Closing browser")
-        browser.close_tab(tab)
-        
+        if tab:
+            try:
+                # 먼저 페이지 닫기 시도
+                tab.Page.close()
+                time.sleep(0.3)
+            except Exception as e:
+                logger.warning(f"Error closing page: {e}")
+                
+            # 탭 중지 (네트워크 리스닝 스레드를 안전하게 중지)
+            try:
+                tab.socket.close()  # 소켓 직접 닫기 시도
+            except Exception as e:
+                logger.warning(f"Error closing socket: {e}")
+                
+            try:
+                tab._recv_thread.join(timeout=1.0)  # 스레드 종료 대기 (타임아웃 설정)
+            except Exception as e:
+                logger.warning(f"Error joining thread: {e}")
+                
+            try:
+                tab.stop()
+            except Exception as e:
+                logger.warning(f"Expected error stopping tab: {e}")
+                
+        # 브라우저에서 탭 닫기
+        if browser and tab and hasattr(tab, 'id'):
+            try:
+                browser.close_tab(tab.id)
+            except Exception as e:
+                logger.warning(f"Expected error closing tab: {e}")
+                
     except Exception as e:
-        logger.error(f"Unexpected error in main: {e}")
-        logger.error(traceback.format_exc())
-    finally:
-        # 종료 시 브라우저 프로세스 정리
+        logger.warning(f"Error in safe_close_tab: {e}")
+
+def check_task_completion(response_text=None, check_flag_file=True):
+    """
+    작업 완료 여부를 확인하는 헬퍼 함수입니다.
+    응답 텍스트와 플래그 파일 모두 확인합니다.
+    
+    Args:
+        response_text: 확인할 응답 텍스트 (없으면 플래그 파일만 확인)
+        check_flag_file: 플래그 파일 확인 여부
+        
+    Returns:
+        (완료 여부, 완료 메시지)
+    """
+    # 응답 텍스트에서 완료 확인
+    if response_text:
+        completion_markers = [
+            "##TASK_COMPLETE##", 
+            "\"status\":\"complete\"", 
+            "에이전트작업완료",
+            "task_complete.flag"
+        ]
+        
+        if any(marker.lower() in response_text.lower() for marker in completion_markers):
+            logger.info(f"Task completion detected in response: '{next((m for m in completion_markers if m.lower() in response_text.lower()), '')}'")
+            return True, response_text
+    
+    # 플래그 파일 확인
+    if check_flag_file and os.path.exists("task_complete.flag"):
         try:
-            for proc in psutil.process_iter(['name']):
-                if proc.info['name'] == "brave.exe":
-                    logger.info("Cleaning up browser process")
-                    proc.kill()
-        except:
-            pass
+            with open("task_complete.flag", "r") as f:
+                flag_content = f.read().strip()
+                
+            completion_markers = ["##TASK_COMPLETE##", "에이전트작업완료", "status\":\"complete"]
+            
+            if any(marker in flag_content for marker in completion_markers):
+                logger.info(f"Task completion flag file found with marker: '{next((m for m in completion_markers if m in flag_content), '')}'")
+                completion_msg = "작업이 완료되었습니다. 완료 플래그 파일이 생성되었습니다."
+                completion_msg += f"\n\n완료 정보: {flag_content}"
+                return True, completion_msg
+        except Exception as e:
+            logger.warning(f"Error reading task completion flag file: {e}")
+    
+    return False, ""
 
 def execute_chatgpt_cmd_session(tab, query):
     """
@@ -686,27 +707,20 @@ echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"comple
         time.sleep(1)
         
         # 명령어 실행 및 결과 전송 루프
-        max_iterations = 10  # 안전을 위한 최대 반복 횟수
+        max_iterations = 15  # 안전을 위한 최대 반복 횟수
         iteration = 0
         final_result = ""
+        empty_response_count = 0  # 빈 응답이 연속으로 나오는 횟수 추적
 
         while iteration < max_iterations:
             iteration += 1
             logger.info(f"Command iteration {iteration}/{max_iterations}")
             
-            # 작업 완료 플래그 파일 확인
-            if os.path.exists("task_complete.flag"):
-                logger.info("Task completion flag file found")
-                with open("task_complete.flag", "r") as f:
-                    flag_content = f.read().strip()
-                if "##TASK_COMPLETE##" in flag_content:
-                    logger.info("Task completed with completion flag")
-                    final_result = "작업이 완료되었습니다. 완료 플래그 파일이 생성되었습니다."
-                    # JSON 상태 파일의 내용 읽기
-                    cmd_result = cmd_manager.execute_command('type task_complete.flag', timeout=60)
-                    if cmd_result["success"]:
-                        final_result += f"\n\n완료 정보: {cmd_result['stdout']}"
-                    break
+            # 작업 완료 확인 (플래그 파일)
+            is_completed, completion_msg = check_task_completion(check_flag_file=True)
+            if is_completed:
+                final_result = completion_msg
+                break
             
             # ChatGPT 응답에서 명령어 추출
             js_code = """
@@ -719,7 +733,7 @@ echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"comple
         '.text-message .markdown',
         '[data-message-author-role="assistant"] .markdown',
         '.agent-turn .markdown',
-        'article .prose'
+        '.prose'
     ];
     
     let lastMessage = null;
@@ -733,10 +747,30 @@ echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"comple
         }
     }
    
-   // 2. whitespace-pre 및 language 클래스를 가진 요소 추출
-   const whitespacePreElements = document.querySelectorAll('[class*="whitespace-pre"]');
-   if(whitespacePreElements.length > 0){
-       codeBlockCommands.push(whitespacePreElements[whitespacePreElements.length - 1].textContent);
+   if (lastMessage) {
+       // 코드 블록 찾기
+       const preElements = lastMessage.querySelectorAll('pre code');
+       if (preElements.length > 0) {
+           // 가장 마지막 코드 블록 사용
+           const lastCodeBlock = preElements[preElements.length - 1];
+           codeBlockCommands.push(lastCodeBlock.textContent);
+       }
+       
+       // 인라인 코드 블록도 체크
+       const inlineCodeElements = lastMessage.querySelectorAll('code:not(pre code)');
+       if (inlineCodeElements.length > 0 && codeBlockCommands.length === 0) {
+           // 코드 블록이 없을 경우 인라인 코드도 확인
+           const lastInlineCode = inlineCodeElements[inlineCodeElements.length - 1];
+           codeBlockCommands.push(lastInlineCode.textContent);
+       }
+   }
+   
+   // whitespace-pre 및 language 클래스를 가진 요소 추출
+   if (codeBlockCommands.length === 0) {
+       const whitespacePreElements = document.querySelectorAll('[class*="whitespace-pre"]');
+       if(whitespacePreElements.length > 0){
+           codeBlockCommands.push(whitespacePreElements[whitespacePreElements.length - 1].textContent);
+       }
    }
    
    // 완료 확인 - 개선된 패턴 확인
@@ -765,30 +799,47 @@ echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"comple
            
             result = tab.Runtime.evaluate(expression=js_code)
             response_text = result.get('result', {}).get('value', "")
-            print("response_text", result)
+            print("response_text:", response_text[:100] + "..." if len(response_text) > 100 else response_text)
             
-            # 응답 텍스트에서 명령어 추출 또는 완료 여부 확인
-            if any(marker in response_text for marker in [
-                "##TASK_COMPLETE##", 
-                "\"status\":\"complete\"", 
-                "에이전트작업완료"
-            ]):
-                logger.info("Task completion detected in response")
-                final_result = response_text
+            # 응답 텍스트에서 작업 완료 여부 확인
+            is_completed, completion_msg = check_task_completion(response_text, check_flag_file=True)
+            if is_completed:
+                final_result = completion_msg
                 break
                 
             # 코드 블록에서 추출한 명령어가 있으면 실행
             cmd_to_execute = response_text.strip() if response_text else None
-            print("cmd_to_execute", cmd_to_execute)
+            print("cmd_to_execute:", cmd_to_execute)
             
             if not cmd_to_execute:
                 logger.warning("No command found in response")
+                empty_response_count += 1
+                
+                # 연속으로 3번 이상 빈 응답이 오면 중단
+                if empty_response_count >= 3:
+                    logger.warning("Received empty responses 3 times in a row, stopping")
+                    final_result = "빈 응답이 연속으로 3회 수신되어 작업을 중단합니다."
+                    break
+                
                 send_query(tab, "명령어를 찾을 수 없습니다. CMD 명령어를 코드 블록으로 명확하게 제시해주세요.")
                 
                 if not wait_for_response_complete(tab, timeout=300):
                     logger.warning("Response waiting timed out")
                 continue
+            
+            # 유효한 명령어가 있으면 빈 응답 카운터 초기화
+            empty_response_count = 0
            
+            # 작업 완료 명령인지 별도로 체크
+            if "##TASK_COMPLETE##" in cmd_to_execute or "에이전트작업완료" in cmd_to_execute:
+                logger.info("Task completion command detected")
+                
+                # 실행 전에 한번 더 확인
+                is_completed, completion_msg = check_task_completion(check_flag_file=True)
+                if is_completed:
+                    final_result = completion_msg
+                    break
+            
             # 명령어 실행
             cmd_result = cmd_manager.execute_command("dir", timeout=60)
             rsltstrpre = '---작업 전의 dir 결과 ---\n'
@@ -797,6 +848,12 @@ echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"comple
             
             logger.info(f"Executing command: {cmd_to_execute}")
             cmd_result = cmd_manager.execute_command(cmd_to_execute, timeout=300)
+            
+            # 명령어 실행 후 작업 완료 여부 확인
+            is_completed, completion_msg = check_task_completion(check_flag_file=True)
+            if is_completed:
+                final_result = completion_msg
+                break
             
             cmd_resultpost = cmd_manager.execute_command("dir", timeout=60)
             rsltstrpost = '\n\n---작업 후의 dir 결과 ---\n'
@@ -833,19 +890,11 @@ echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"comple
                 logger.warning("Response waiting timed out")
                 continue
 
-            # 작업 완료 플래그 파일 다시 확인
-            if os.path.exists("task_complete.flag"):
-                logger.info("Task completion flag file found after response")
-                with open("task_complete.flag", "r") as f:
-                    flag_content = f.read().strip()
-                if "##TASK_COMPLETE##" in flag_content:
-                    logger.info("Task completed with completion flag")
-                    final_result = "작업이 완료되었습니다. 완료 플래그 파일이 생성되었습니다."
-                    # JSON 상태 파일의 내용 읽기
-                    cmd_result = cmd_manager.execute_command('type task_complete.flag', timeout=60)
-                    if cmd_result["success"]:
-                        final_result += f"\n\n완료 정보: {cmd_result['stdout']}"
-                    break
+            # 응답 후 작업 완료 여부 확인
+            is_completed, completion_msg = check_task_completion(check_flag_file=True)
+            if is_completed:
+                final_result = completion_msg
+                break
 
         if not final_result and iteration >= max_iterations:
             logger.warning("Maximum iterations reached without completion")
@@ -864,6 +913,7 @@ echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"comple
             summary += f"완료 상태: 성공\n완료 태그: {flag_content}\n"
         else:
             summary += "완료 상태: 미완료 또는 실패\n"
+            summary += f"실행된 명령어 수: {iteration - empty_response_count}\n"
         
         # 최종 디렉토리 상태
         cmd_result = cmd_manager.execute_command("dir", timeout=60)
@@ -953,6 +1003,8 @@ def cmd_session_main():
     """
     CMD 세션 메인 함수
     """
+    browser = None
+    tab = None
     try:
         # 사용자 입력 받기
         user_query = input("CMD 작업을 위한 쿼리를 입력하세요: ")
@@ -981,25 +1033,34 @@ def cmd_session_main():
         print("\n--- 작업 결과 ---")
         print(result)
         
-        # 브라우저 정리
-        logger.info("Closing browser")
-        browser.close_tab(tab)
-        
     except Exception as e:
         logger.error(f"Unexpected error in CMD session: {e}")
         logger.error(traceback.format_exc())
     finally:
-        # 종료 시 브라우저 프로세스 정리
+        # 브라우저 정리 - 향상된 정리 로직
         try:
+            logger.info("Closing browser")
+            # 안전하게 탭 닫기
+            safe_close_tab(browser, tab)
+            
+            # 프로세스 정리 전 추가 대기
+            time.sleep(1.0)
+            
+            # 브라우저 프로세스 종료
             for proc in psutil.process_iter(['name']):
                 if proc.info['name'] == "brave.exe":
-                    logger.info("Cleaning up browser process")
-                    proc.kill()
-        except:
-            pass
+                    try:
+                        logger.info("Cleaning up browser process")
+                        proc.kill()
+                    except Exception as kill_error:
+                        logger.warning(f"Error killing browser process: {kill_error}")
+        except Exception as cleanup_error:
+            logger.error(f"Error during cleanup: {cleanup_error}")
 
 # 메인 함수 수정
 def newmain():
+    browser = None
+    tab = None
     try:
         # 작업 모드 선택 (기존 기능 유지하면서 CMD 세션 기능 추가)
         print("작업 모드를 선택하세요:")
@@ -1043,23 +1104,30 @@ def newmain():
                 with open("fixed_code.py", "w", encoding="utf-8") as f:
                     f.write(python_code)
                 logger.info("Code saved to fixed_code.py")
-            
-            # 브라우저 정리
-            logger.info("Closing browser")
-            browser.close_tab(tab)
         
     except Exception as e:
         logger.error(f"Unexpected error in main: {e}")
         logger.error(traceback.format_exc())
     finally:
-        # 종료 시 브라우저 프로세스 정리
+        # 브라우저 정리 - 향상된 정리 로직
         try:
+            logger.info("Closing browser")
+            # 안전하게 탭 닫기
+            safe_close_tab(browser, tab)
+            
+            # 프로세스 정리 전 추가 대기
+            time.sleep(1.0)
+            
+            # 브라우저 프로세스 종료
             for proc in psutil.process_iter(['name']):
                 if proc.info['name'] == "brave.exe":
-                    logger.info("Cleaning up browser process")
-                    proc.kill()
-        except:
-            pass
+                    try:
+                        logger.info("Cleaning up browser process")
+                        proc.kill()
+                    except Exception as kill_error:
+                        logger.warning(f"Error killing browser process: {kill_error}")
+        except Exception as cleanup_error:
+            logger.error(f"Error during cleanup: {cleanup_error}")
 
 if __name__ == "__main__":
     newmain()

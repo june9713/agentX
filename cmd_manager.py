@@ -7,6 +7,7 @@ import time
 import random
 from datetime import datetime
 from typing import Dict, Any, Optional
+import difflib
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +40,18 @@ class PersistentCmdManager:
             print("line"  ,line)
             q.put(line)
             
+    @staticmethod
+    def _count_diff_chars(str1, str2):
+        """Count the number of different characters between two strings."""
+        if len(str1) != len(str2):
+            return max(len(str1), len(str2))
+        return sum(c1 != c2 for c1, c2 in zip(str1, str2))
             
     def _drain(self, q, until_marker: str, timeout: float):
         lines, start = [], time.time()
+        filtered_lines = []
+        prev_line = ""
+        
         while time.time() - start < timeout:
             try:
                 line = q.get(timeout=0.05)
@@ -50,7 +60,18 @@ class PersistentCmdManager:
             if until_marker in line:
                 break
             lines.append(line)
-        return "".join(lines)
+        
+        # Filter out lines that are very similar to previous ones (progress updates)
+        for line in lines:
+            if not prev_line or self._count_diff_chars(prev_line, line) > 3:
+                filtered_lines.append(line)
+            prev_line = line
+        
+        # Always keep the last line of similar progress updates
+        if lines and not filtered_lines:
+            filtered_lines.append(lines[-1])
+        
+        return "".join(filtered_lines)
 
 
     def execute_command(self, cmd: str, timeout: int = 30) -> Dict[str, Any]:
