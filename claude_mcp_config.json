@@ -9,7 +9,7 @@
     "chrome": {
       "enabled": true,
       "connection": {
-        "url": "http://localhost:9222",
+        "url": "http://localhost:9333",
         "debug": false
       }
     },

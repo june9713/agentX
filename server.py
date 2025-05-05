@@ -43,7 +43,7 @@ mcp = FastMCP("Chrome Debug Console MCP")
 
 # 전역 CDP 클라이언트 인스턴스
 _cdp_client = None
-_default_port = 9222
+_default_port = 9333
 _default_host = "localhost"
 
 
@@ -519,12 +519,12 @@ def chrome_screenshot(save_path: Optional[str] = None) -> str:
 
 # 크롬 DevTools 연결 관리 툴
 @mcp.tool()
-def chrome_connect(port: int = 9222, host: str = "localhost") -> str:
+def chrome_connect(port: int = 9333, host: str = "localhost") -> str:
     """
     특정 포트에서 실행 중인 크롬 디버그 인스턴스에 연결합니다.
     
     Args:
-        port: 크롬 디버그 포트 (기본값: 9222)
+        port: 크롬 디버그 포트 (기본값: 9333)
         host: 크롬 디버그 호스트 (기본값: localhost)
     
     Returns:

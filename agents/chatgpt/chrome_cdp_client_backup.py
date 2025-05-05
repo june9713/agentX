@@ -378,7 +378,7 @@ def simulate_paste_local_file(filename, tab):
             mime_type = 'text/plain'
         
         script = """
-        (function() {
+        (async function() {
             try {
                 const editor = document.querySelector('#prompt-textarea');
                 if (!editor) {
@@ -445,171 +445,173 @@ def simulate_paste_local_file(filename, tab):
 
 def send_query(tab, text):
     """
-    ChatGPT에 쿼리를 전송합니다.
-    텍스트 입력 필드 접근 및 입력 최적화
+    ChatGPT 에디터에 텍스트를 입력하고 전송 버튼을 클릭합니다.
+    개선된 버전: 긴 텍스트를 안정적으로 전송하고 코드 블록 포맷을 보존합니다.
+    
+    Args:
+        tab: 브라우저 탭 객체
+        text: 전송할 텍스트
+        
+    Returns:
+        성공 여부를 나타내는 불리언 값
     """
     try:
-        # 편집기 필드 찾기 및 포커스
-        script = """
-        (function() {
-            try {
-                // 더 효율적인 편집기 접근
-                // 1. 주요 편집기 찾기 (가장 마지막에 있는 활성 편집기)
-                const textareas = document.querySelectorAll('textarea');
-                let editor = null;
-                
-                if (textareas && textareas.length > 0) {
-                    // 텍스트 에리어가 있으면 마지막 것 사용 (가장 최근에 활성화된 것)
-                    editor = textareas[textareas.length - 1];
-                    // 편집기가 다음 메시지 입력창인지 확인
-                    if (editor.placeholder && editor.placeholder.includes("Message ChatGPT")) {
-                        console.log("찾음: ChatGPT 입력 필드");
-                    } else {
-                        editor = null;  // 일치하지 않으면 계속 검색
-                    }
-                }
-                
-                // 2. 기존 편집기를 찾지 못한 경우 검색 확장
-                if (!editor) {
-                    console.log("기본 필드를 찾지 못했습니다. 대체 방법으로 검색 중...");
-                    
-                    // ChatGPT의 다른 입력 필드 검색 시도
-                    const altEditors = document.querySelectorAll('div[role="textbox"], div[contenteditable="true"]');
-                    
-                    for (const alt of altEditors) {
-                        // 채팅 입력창으로 보이는지 확인 (부모 요소 확인)
-                        const parent = alt.closest('form, div[role="form"]');
-                        if (parent) {
-                            editor = alt;
-                            console.log("대체 입력 필드 찾음");
-                            break;
-                        }
-                    }
-                }
-                
-                // 3. 편집기를 찾았는지 확인
-                if (!editor) {
-                    return { error: "입력 필드를 찾을 수 없습니다.", success: false };
-                }
-                
-                // 4. 편집기에 포커스 및 텍스트 설정
-                editor.focus();
-                
-                // 5. 텍스트 필드의 종류에 따라 다르게 처리
-                if (editor.tagName.toLowerCase() === 'textarea') {
-                    // 직접 값 설정 (텍스트 에리어인 경우)
-                    editor.value = '';  // 기존 텍스트 지우기
-                    
-                    // 이벤트 시뮬레이션 방식으로 입력
-                    // React 컴포넌트를 위한 변경 이벤트 발생
-                    const event = new Event('input', { bubbles: true });
-                    editor.value = text;
-                    editor.dispatchEvent(event);
-                } else {
-                    // contenteditable div인 경우
-                    editor.innerHTML = '';
-                    
-                    // execCommand는 더 이상 권장되지 않지만 여전히 작동함
-                    document.execCommand('insertText', false, text);
-                }
-                
-                return { success: true };
-            } catch (e) {
-                console.error("에디터 접근 중 오류:", e);
-                return { error: e.toString(), success: false };
-            }
-        })();
-        """
+        if not text.strip():
+            logger.warning("전송할 텍스트가 비어 있습니다")
+            return False
         
-        result = tab.Runtime.evaluate(expression=script)
-        script_result = result.get('result', {}).get('value', {})
+        # 텍스트 내용에 줄바꿈이 있는지 확인
+        has_newlines = '\n' in text
+        has_code_blocks = '```' in text
         
-        # 결과가 객체인 경우 성공 여부 확인
-        if isinstance(script_result, dict) and 'success' in script_result:
-            if not script_result.get('success', False):
-                error_msg = script_result.get('error', '알 수 없는 오류')
-                logger.warning(f"에디터에 텍스트를 설정하지 못했습니다: {error_msg}")
+        logger.debug(f"텍스트 전송 시작 - 길이: {len(text)}, 줄바꿈: {has_newlines}, 코드블록: {has_code_blocks}")
+        
+        # 텍스트의 특수 문자 이스케이프
+        escaped_text = text.replace('\\', '\\\\').replace('`', '\\`').replace("'", "\\'").replace('"', '\\"')
+        
+        # 텍스트 에디터에 텍스트 삽입 - 개선된 방식
+        if has_code_blocks or has_newlines:
+            # 코드 블록이 있거나 줄바꿈이 있는 경우의 고급 삽입 방식
+            js_code = r"""
+            (function() {
+                try {
+                    // 1. 최신 ChatGPT 에디터 찾기
+                    const editor = document.querySelector('[contenteditable="true"]') || 
+                                  document.querySelector('.ProseMirror');
+                    if (!editor) {
+                        console.error('에디터를 찾을 수 없습니다');
+                        return {success: false, error: '에디터를 찾을 수 없습니다'};
+                    }
+                    
+                    // 2. 에디터에 포커스 설정
+                    editor.focus();
+                    
+                    // 3. 클립보드를 통한 붙여넣기 방식 (가장 안정적)
+                    const textToPaste = `%s`;
+                    
+                    // 클립보드 API 사용
+                    const pasteEvent = new ClipboardEvent('paste', {
+                        bubbles: true,
+                        clipboardData: new DataTransfer()
+                    });
+                    
+                    // 클립보드 데이터 설정
+                    pasteEvent.clipboardData.setData('text/plain', textToPaste);
+                    
+                    // 붙여넣기 이벤트 발생
+                    editor.dispatchEvent(pasteEvent);
+                    
+                    // 4. 입력 이벤트 시뮬레이션으로 ChatGPT에 변경 알림
+                    const inputEvent = new Event('input', {bubbles: true});
+                    editor.dispatchEvent(inputEvent);
+                    
+                    return {success: true};
+                } catch(err) {
+                    console.error('텍스트 입력 중 오류:', err);
+                    return {success: false, error: err.toString()};
+                }
+            })();
+            """ % escaped_text
+        else:
+            # 일반 텍스트 삽입 (단순한 경우)
+            js_code = r"""
+            (function() {
+                try {
+                    // 에디터 찾기
+                    const editor = document.querySelector('[contenteditable="true"]') || 
+                                  document.querySelector('.ProseMirror');
+                    if (!editor) return {success: false, error: '에디터를 찾을 수 없습니다'};
+                    
+                    // 에디터에 포커스
+                    editor.focus();
+                    
+                    // innerHTML로 직접 설정 (단순 텍스트의 경우 더 안정적)
+                    editor.innerHTML = `<p>${`%s`}</p>`;
+                    
+                    // 입력 이벤트 발생
+                    editor.dispatchEvent(new Event('input', {bubbles: true}));
+                    
+                    return {success: true};
+                } catch(err) {
+                    return {success: false, error: err.toString()};
+                }
+            })();
+            """ % escaped_text
+            
+        # 자바스크립트 실행
+        result = tab.Runtime.evaluate(expression=js_code)
+        response = result.get('result', {}).get('value', {})
+        
+        # 결과 확인
+        if isinstance(response, dict):
+            success = response.get('success', False)
+            if not success and 'error' in response:
+                logger.warning(f"텍스트 입력 실패: {response.get('error')}")
                 return False
+        else:
+            success = bool(response)
+            
+        if not success:
+            logger.warning("에디터에 텍스트를 설정하지 못했습니다")
+            return False
+            
+        # 텍스트 입력 후 잠시 대기 (긴 텍스트의 경우 더 오래 대기)
+        wait_time = 0.5 + (min(len(text) / 5000, 2.0))
+        time.sleep(wait_time)
         
-        # 전송 버튼 클릭
-        send_script = """
+        # 전송 버튼 클릭 - 개선된 선택자
+        js_code = """
         (function() {
             try {
-                // 1. 마지막 입력 필드 찾기
-                const textareas = document.querySelectorAll('textarea');
-                if (!textareas || textareas.length === 0) {
-                    return { error: "텍스트 입력 필드를 찾을 수 없습니다", success: false };
-                }
+                // 1. 표준 전송 버튼 시도
+                let sendButton = document.querySelector('button[data-testid="send-button"]');
                 
-                const lastTextarea = textareas[textareas.length - 1];
-                
-                // 2. 전송 버튼 찾기 (텍스트 입력 필드의 가장 가까운 form 안에서)
-                const form = lastTextarea.closest('form') || lastTextarea.parentElement;
-                if (!form) {
-                    return { error: "폼 또는 부모 요소를 찾을 수 없습니다", success: false };
-                }
-                
-                // 3. 다양한 버튼 선택자로 시도
-                let sendButton = form.querySelector('button[data-testid="send-button"]');
-                
-                // 4. 직접 전송 버튼을 찾지 못한 경우, 폼 내의 모든 버튼 확인
+                // 2. 대체 선택자 시도
                 if (!sendButton) {
-                    const allButtons = form.querySelectorAll('button');
-                    
-                    for (const button of allButtons) {
-                        // 전송 버튼의 특징적 요소 확인 (종이비행기 아이콘 또는 텍스트 내용)
-                        const hasIcon = button.querySelector('svg') !== null;
-                        const buttonText = button.textContent.toLowerCase();
-                        
-                        // 마지막 버튼이거나, 종이비행기 아이콘이 있거나, '전송' 관련 텍스트가 있는 경우
-                        if (hasIcon || buttonText.includes('send') || buttonText.includes('submit')) {
-                            sendButton = button;
-                            break;
-                        }
-                    }
-                    
-                    // 여전히 버튼을 찾지 못한 경우, 마지막 버튼 사용 (휴리스틱)
-                    if (!sendButton && allButtons.length > 0) {
-                        sendButton = allButtons[allButtons.length - 1];
-                    }
+                    sendButton = document.querySelector('button.absolute.bottom-0') ||
+                                document.querySelector('form button:last-child') ||
+                                Array.from(document.querySelectorAll('button')).find(b => 
+                                    b.textContent.includes('Send') || 
+                                    b.getAttribute('aria-label')?.includes('Send'));
                 }
                 
-                // 5. 버튼을 찾았는지 확인
+                // 3. 버튼 상태 확인
                 if (!sendButton) {
-                    return { error: "전송 버튼을 찾을 수 없습니다", success: false };
+                    return {success: false, error: '전송 버튼을 찾을 수 없습니다'};
                 }
                 
-                // 6. 버튼 상태 확인
-                const isDisabled = sendButton.hasAttribute('disabled') || 
-                                  sendButton.classList.contains('disabled') ||
-                                  window.getComputedStyle(sendButton).opacity < 0.5;
-                
-                if (isDisabled) {
-                    return { error: "전송 버튼이 비활성화 상태입니다", success: false };
+                if (sendButton.disabled) {
+                    return {success: false, error: '전송 버튼이 비활성화되어 있습니다'};
                 }
                 
-                // 7. 전송 버튼 클릭
+                // 4. 버튼 클릭
                 sendButton.click();
-                
-                return { success: true };
-            } catch (e) {
-                console.error("전송 버튼 클릭 중 오류:", e);
-                return { error: e.toString(), success: false };
+                return {success: true};
+            } catch(err) {
+                return {success: false, error: err.toString()};
             }
         })();
         """
         
-        send_result = tab.Runtime.evaluate(expression=send_script)
-        send_value = send_result.get('result', {}).get('value', {})
+        result = tab.Runtime.evaluate(expression=js_code)
+        response = result.get('result', {}).get('value', {})
         
-        if isinstance(send_value, dict) and 'success' in send_value:
-            if not send_value.get('success', False):
-                error_msg = send_value.get('error', '알 수 없는 오류')
-                logger.warning(f"전송 버튼 클릭 실패: {error_msg}")
+        # 결과 확인
+        if isinstance(response, dict):
+            success = response.get('success', False)
+            if not success and 'error' in response:
+                logger.warning(f"전송 버튼 클릭 실패: {response.get('error')}")
                 return False
-                
-        return True
-        
+        else:
+            success = bool(response)
+            
+        if success:
+            logger.info(f"쿼리 전송 성공: {text[:50]}...")
+        else:
+            logger.warning("전송 버튼 클릭 실패")
+            
+        return success
+            
     except Exception as e:
         logger.error(f"쿼리 전송 중 오류 발생: {e}")
         if logger.isEnabledFor(logging.DEBUG):
@@ -914,9 +916,6 @@ def execute_chatgpt_cmd_session(tab, browser, mini_tab, query):
         # CMD 결과 초기화
         cmd_result = None
         
-        # 명령어와 출력 내역을 저장할 리스트 초기화
-        cmd_history = []
-        
         # 첫 번째 프롬프트 구성 - 초기 지시사항
         initial_prompt = f"""당신은 시스템 명령어 실행 도우미입니다. 다음 작업을 수행하기 위한 명령어를 제공해주세요:
 
@@ -929,12 +928,10 @@ def execute_chatgpt_cmd_session(tab, browser, mini_tab, query):
 - 한 번에 하나의 명령어만 제공해주세요 (복잡한 파이프라인이나 && 연산자 사용 자제)
 - 각 명령어의 결과를 확인 후 다음 명령어를 제시할 것입니다
 
-중요: 명령어는 반드시 다음과 같은 명확한 형식으로 작성해주세요:
-
-COMMAND: dir
-(dir 명령어는 예시이며, 적절한 명령어로 대체해주세요)
-
-첫 번째로 실행할 명령어를 추천해주세요. 명령어는 'COMMAND:' 접두사로 시작하여 쉽게 식별할 수 있게 해주세요."""
+첫 번째로 실행할 명령어를 추천해주세요. 코드 블록으로 명령어 하나만 작성해 주세요.
+```cmd
+(이곳에 명령어를 작성)
+```"""
 
         # 첫 번째 프롬프트 전송
         logger.info("초기 프롬프트 전송 중...")
@@ -958,73 +955,15 @@ COMMAND: dir
             iteration += 1
             logger.info(f"명령어 처리 반복 {iteration}/{max_iterations}")
             
-            # 디버깅: 페이지 내용 직접 추출
-            debug_script = """
-                (function() { 
-                    return document.body.innerText.substring(0, 1000); 
-                })()
-            """
-            debug_result = tab.Runtime.evaluate(expression=debug_script)
-            debug_text = debug_result.get('result', {}).get('value', '')
-            logger.info(f"페이지 텍스트 내용 (처음 1000자):\n{debug_text}")
-            
             # 응답 텍스트 가져오기 (페이지로부터 JavaScript 실행)
             response_script = """
                 (function() {
                     try {
-                        // HTML 구조 디버깅
-                        const debugInfo = {
-                            bodyText: document.body.innerText.substring(0, 300),
-                            html: document.body.innerHTML.substring(0, 300),
-                            assistantElements: document.querySelectorAll('div[data-message-author-role="assistant"]').length,
-                            markdownElements: document.querySelectorAll('.markdown').length,
-                            proseElements: document.querySelectorAll('.prose').length,
-                            preElements: document.querySelectorAll('pre').length,
-                            codeElements: document.querySelectorAll('code').length
-                        };
-                        
                         // 명령어와 코드 블록을 우선적으로 추출하는 향상된 스크립트
                         // 1. 마지막 응답 메시지 찾기 (가장 최근 응답)
-                        let assistantMessages = Array.from(document.querySelectorAll('div[data-message-author-role="assistant"]'));
-                        
-                        // 새로운 ChatGPT UI에서의 선택자 시도
+                        const assistantMessages = Array.from(document.querySelectorAll('div[data-message-author-role="assistant"]'));
                         if (!assistantMessages || assistantMessages.length === 0) {
-                            assistantMessages = Array.from(document.querySelectorAll('.markdown'));
-                            if (!assistantMessages || assistantMessages.length === 0) {
-                                // 다른 선택자도 시도
-                                assistantMessages = Array.from(document.querySelectorAll('.prose'));
-                                if (!assistantMessages || assistantMessages.length === 0) {
-                                    // 다른 모든 가능한 컨테이너 찾기
-                                    const possibleContainers = Array.from(document.querySelectorAll('div[role="region"]'));
-                                    // 내용이 있는 마지막 컨테이너 사용
-                                    for (const container of possibleContainers.reverse()) {
-                                        if (container.textContent.trim()) {
-                                            assistantMessages = [container];
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        
-                        if (!assistantMessages || assistantMessages.length === 0) {
-                            // 마지막 시도: 페이지에서 모든 가능한 코드 블록 찾기
-                            const allCodeBlocks = Array.from(document.querySelectorAll('pre, code'));
-                            if (allCodeBlocks && allCodeBlocks.length > 0) {
-                                const lastCodeBlock = allCodeBlocks[allCodeBlocks.length - 1];
-                                return {
-                                    type: "code_block",
-                                    text: lastCodeBlock.textContent.trim(),
-                                    allBlocks: [lastCodeBlock.textContent.trim()],
-                                    debug: debugInfo
-                                };
-                            }
-                            
-                            return { 
-                                error: "응답 메시지를 찾을 수 없습니다", 
-                                text: document.body.innerText.substring(0, 500),
-                                debug: debugInfo
-                            };
+                            return { error: "응답 메시지를 찾을 수 없습니다", text: "" };
                         }
                         
                         const lastMessage = assistantMessages[assistantMessages.length - 1];
@@ -1056,8 +995,7 @@ COMMAND: dir
                                 return {
                                     type: "cmd_block",
                                     text: lastCmdBlock.text,
-                                    allBlocks: commandBlocks.map(b => b.text),
-                                    debug: debugInfo
+                                    allBlocks: commandBlocks.map(b => b.text)
                                 };
                             } 
                             else if (commandBlocks.length > 0) {
@@ -1066,8 +1004,7 @@ COMMAND: dir
                                 return {
                                     type: "code_block",
                                     text: lastBlock.text,
-                                    allBlocks: commandBlocks.map(b => b.text),
-                                    debug: debugInfo
+                                    allBlocks: commandBlocks.map(b => b.text)
                                 };
                             }
                         }
@@ -1093,8 +1030,8 @@ COMMAND: dir
                         // 텍스트를 줄 단위로 분석
                         const lines = messageText.split("\\n").map(line => line.trim()).filter(line => line);
                         
-                        // CMD 명령어 패턴 찾기 (보다 포괄적인 패턴 사용)
-                        const cmdPattern = /^(dir|cd|copy|del|echo|type|mkdir|rmdir|ping|powershell|for|if|findstr|tasklist|netstat|ipconfig|systeminfo|tree)\\b/i;
+                        // CMD 명령어 패턴 찾기
+                        const cmdPattern = /^(dir|cd|copy|del|echo|type|mkdir|rmdir|ping|powershell|for|if|findstr)\\b/i;
                         const cmdLines = lines.filter(line => cmdPattern.test(line));
                         
                         if (cmdLines.length > 0) {
@@ -1102,36 +1039,14 @@ COMMAND: dir
                             return {
                                 type: "cmd_line",
                                 text: cmdLines[cmdLines.length - 1],
-                                allLines: cmdLines,
-                                debug: debugInfo,
-                                messageText: messageText.substring(0, 500) // 디버깅용 전체 메시지 텍스트
+                                allLines: cmdLines
                             };
                         }
                         
-                        // 4. 아무것도 찾지 못한 경우 코드 블록 형식의 패턴 찾기
-                        const codeBlockPattern = /```\\s*cmd\\s*([\\s\\S]*?)```/gi;
-                        const codeMatches = messageText.match(codeBlockPattern);
-                        
-                        if (codeMatches && codeMatches.length > 0) {
-                            // 코드 블록에서 명령어 추출
-                            const lastMatch = codeMatches[codeMatches.length - 1];
-                            const extractedCode = lastMatch.replace(/```\\s*cmd\\s*|```/gi, "").trim();
-                            
-                            return {
-                                type: "code_block",
-                                text: extractedCode,
-                                allBlocks: [extractedCode],
-                                debug: debugInfo,
-                                messageText: messageText.substring(0, 500) // 디버깅용 전체 메시지 텍스트
-                            };
-                        }
-                        
-                        // 5. 아무것도 찾지 못한 경우 전체 텍스트 반환
+                        // 4. 아무것도 찾지 못한 경우 전체 텍스트 반환
                         return {
                             type: "full_text",
-                            text: messageText,
-                            debug: debugInfo,
-                            messageText: messageText.substring(0, 500) // 디버깅용 전체 메시지 텍스트
+                            text: messageText
                         };
                     } catch (error) {
                         return {
@@ -1149,17 +1064,6 @@ COMMAND: dir
                 if 'error' in response_value and response_value['error']:
                     logger.warning(f"응답 추출 중 오류: {response_value['error']}")
                 response_text = response_value.get('text', '')
-                
-                # 디버그 정보 로깅
-                if 'debug' in response_value:
-                    debug_info = response_value.get('debug', {})
-                    logger.info("페이지 디버그 정보:")
-                    for key, value in debug_info.items():
-                        logger.info(f"  {key}: {value}")
-                
-                # 메시지 텍스트 디버그 로깅
-                if 'messageText' in response_value:
-                    logger.info(f"찾은 메시지 텍스트:\n{response_value.get('messageText', '')}")
             else:
                 # 이전 형식 응답 처리 (호환성 유지)
                 response_text = response_value if isinstance(response_value, str) else ''
@@ -1224,16 +1128,18 @@ COMMAND: dir
                 logger.warning("응답에서 명령어를 찾을 수 없습니다.")
                 # 피드백 전송 - 향상된 명령어 제공 요청
                 feedback_message = """
-명령어를 제공해주실 때는 반드시 다음 형식으로 작성해주세요:
+다음 형식으로 정확히 하나의 CMD 명령어를 제공해주세요:
 
-COMMAND: [여기에 명령어 작성]
+```cmd
+명령어
+```
 
+명령어는 별도의 코드 블록 안에 작성해주시고, 다른 설명없이 명령어만 포함해주세요.
 예시:
-COMMAND: dir /s /a:-d d:\ > d:\filelist.txt
-
-중요: 'COMMAND:' 접두사를 반드시 사용해주세요. 이는 명령어를 자동으로 추출하는 데 필수적입니다.
-다른 설명을 제외하고 명령어만 이 형식대로 제공해주세요.
-"""
+```cmd
+dir /s /a:-d d:\ > d:\filelist.txt
+```
+                """
                 send_query(tab, feedback_message)
                 
                 # 응답 대기
@@ -1285,14 +1191,6 @@ COMMAND: dir /s /a:-d d:\ > d:\filelist.txt
                 else:
                     cmd_result = cmd_manager.execute_command(command, timeout=cmd_timeout)
                 
-                # 명령어 및 결과를 히스토리에 추가
-                cmd_output = cmd_result["stdout"] if cmd_result["success"] else cmd_result["stderr"]
-                cmd_history.append({
-                    "command": command,
-                    "output": cmd_output,
-                    "success": cmd_result["success"]
-                })
-                
                 # 실행 결과 확인
                 if cmd_result["success"]:
                     stdout = cmd_result["stdout"].strip()
@@ -1306,14 +1204,7 @@ COMMAND: dir /s /a:-d d:\ > d:\filelist.txt
                         stdout_summary = stdout
                         logger.info(f"명령어 실행 결과:")
                     
-                    # 이전 명령어와 결과 기록을 포함하는 메시지 생성
-                    cmd_history_text = ""
-                    for i, cmd_entry in enumerate(cmd_history):
-                        cmd_history_text += f"명령어 {i+1}: `{cmd_entry['command']}`\n"
-                        cmd_history_text += "실행 결과:\n"
-                        cmd_history_text += f"```\n{cmd_entry['output']}\n```\n\n"
-                    
-                    # ChatGPT로 결과 전송 (이전 명령어 기록 포함)
+                    # ChatGPT로 결과 전송
                     result_message = f"""### 명령어 실행 결과
 
 실행한 명령어: `{command}`
@@ -1323,34 +1214,26 @@ COMMAND: dir /s /a:-d d:\ > d:\filelist.txt
 {stdout_summary}
 ```
 
-### 이전 명령어 및 결과 기록
-{cmd_history_text}
 ------
 
 ### 다음 단계 안내
 작업 목표: '{query}'
 
-다음 명령어를 제안해주세요. 명령어는 반드시 다음 형식으로 작성해주세요:
+다음 명령어를 제안해주세요. 정확히 다음 형식으로 하나의 명령어만 제공해주세요:
 
-COMMAND: [여기에 명령어 작성]
-
-중요: 명령어는 반드시 'COMMAND:' 접두사로 시작해야 하며, 별도의 코드 블록 없이 텍스트 한 줄로 작성해주세요.
+```cmd
+[여기에 명령어 작성]
+```
 
 만약 작업이 완료되었다고 판단되면 다음 명령어를 실행하세요:
-COMMAND: echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"complete","timestamp":"%date% %time%","message":"에이전트작업완료"}}
-"""
+```cmd
+echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"complete","timestamp":"%date% %time%","message":"에이전트작업완료"}}
+```"""
                 else:
                     error_output = cmd_result["stderr"] if cmd_result["stderr"] else "알 수 없는 오류"
                     logger.error(f"명령어 실행 실패: {error_output}")
                     
-                    # 이전 명령어와 결과 기록을 포함하는 메시지 생성
-                    cmd_history_text = ""
-                    for i, cmd_entry in enumerate(cmd_history):
-                        cmd_history_text += f"명령어 {i+1}: `{cmd_entry['command']}`\n"
-                        cmd_history_text += "실행 결과:\n"
-                        cmd_history_text += f"```\n{cmd_entry['output']}\n```\n\n"
-                    
-                    # ChatGPT로 오류 결과 전송 (이전 명령어 기록 포함)
+                    # ChatGPT로 오류 결과 전송
                     result_message = f"""### 명령어 실행 결과 - 오류 발생
 
 실행한 명령어: `{command}`
@@ -1360,53 +1243,21 @@ COMMAND: echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status
 {error_output}
 ```
 
-### 이전 명령어 및 결과 기록
-{cmd_history_text}
 ------
 
 ### 다음 단계 안내
 작업 목표: '{query}'
 
-오류를 해결하고 작업을 진행하기 위한 다음 명령어를 제안해주세요. 명령어는 반드시 다음 형식으로 작성해주세요:
+오류를 해결하고 작업을 진행하기 위한 다음 명령어를 제안해주세요. 정확히 다음 형식으로 하나의 명령어만 제공해주세요:
 
-COMMAND: [여기에 명령어 작성]
-
-중요: 명령어는 반드시 'COMMAND:' 접두사로 시작해야 하며, 별도의 코드 블록 없이 텍스트 한 줄로 작성해주세요.
+```cmd
+[여기에 명령어 작성]
+```
 
 만약 작업이 완료되었다고 판단되면 다음 명령어를 실행하세요:
-COMMAND: echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"complete","timestamp":"%date% %time%","message":"에이전트작업완료"}}
-"""
-            except Exception as e:
-                logger.error(f"명령어 실행 중 오류 발생: {e}")
-                
-                # 이전 명령어와 결과 기록을 포함하는 메시지 생성
-                cmd_history_text = ""
-                for i, cmd_entry in enumerate(cmd_history):
-                    cmd_history_text += f"명령어 {i+1}: `{cmd_entry['command']}`\n"
-                    cmd_history_text += "실행 결과:\n"
-                    cmd_history_text += f"```\n{cmd_entry['output']}\n```\n\n"
-                
-                result_message = f"""### 명령어 실행 결과 - 시스템 오류 발생
-
-실행한 명령어: `{command}`
-
-오류 내용:
-```
-{str(e)}
-```
-
-### 이전 명령어 및 결과 기록
-{cmd_history_text}
-------
-
-### 다음 단계 안내
-작업 목표: '{query}'
-
-다른 접근 방식으로 작업을 시도해주세요. 명령어는 반드시 다음 형식으로 작성해주세요:
-
-COMMAND: [여기에 명령어 작성]
-
-중요: 명령어는 반드시 'COMMAND:' 접두사로 시작해야 하며, 별도의 코드 블록 없이 텍스트 한 줄로 작성해주세요."""
+```cmd
+echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"complete","timestamp":"%date% %time%","message":"에이전트작업완료"}}
+```"""
             
             # 결과 전송
             logger.info("결과 메시지 전송 중...")
@@ -1508,36 +1359,15 @@ def extract_command_from_response(response_text):
         # 불필요한 UI 텍스트 제거
         cleaned_text = re.sub(r'(?:복사|편집|cmd)\s*', '', response_text, flags=re.IGNORECASE)
         
-        # 1. 가장 먼저 COMMAND: 형식 확인 (명시적 형식)
-        command_prefix_matches = re.findall(r'COMMAND:\s*(.+?)(?:\n|$)', cleaned_text, re.IGNORECASE)
-        if command_prefix_matches:
-            command = command_prefix_matches[-1].strip()  # 마지막 명령어 사용
-            logger.info(f"COMMAND: 형식에서 명령어 찾음: {command}")
-            return command
-        
-        # 2. 코드 블록 패턴 찾기 - ```cmd ... ``` 패턴
-        code_block_matches = re.findall(r'```(?:cmd|bat|bash|shell|powershell|)?\s*(.*?)\s*```', cleaned_text, re.DOTALL)
-        if code_block_matches:
-            for match in code_block_matches:
-                # 명령어 후보 처리
-                cmd_candidate = match.strip()
-                # 명령어 후보가 비어있지 않으면 반환
-                if cmd_candidate:
-                    # 여러 줄인 경우 첫 번째 줄만 추출
-                    first_line = cmd_candidate.split('\n')[0].strip()
-                    if first_line:
-                        logger.info(f"코드 블록에서 명령어 찾음: {first_line}")
-                        return first_line
-        
-        # 3. 행 단위로 분할
+        # 행 단위로 분할
         lines = cleaned_text.split('\n')
         
+        # 모든 줄 중에서 가장 가능성 높은 명령어 찾기
         # Windows 명령어 목록 (가장 흔한 것들)
         common_cmd_prefixes = [
             'dir', 'cd', 'copy', 'del', 'echo', 'type', 'mkdir', 'rmdir', 
             'ping', 'ipconfig', 'netstat', 'findstr', 'find',
-            'for', 'sort', 'fc', 'comp', 'powershell', 'cmd',
-            'tasklist', 'systeminfo', 'tree', 'where'
+            'for', 'sort', 'fc', 'comp', 'powershell', 'cmd'
         ]
         
         # 각 줄 평가
@@ -1550,7 +1380,8 @@ def extract_command_from_response(response_text):
             # 명령어 시작 패턴 확인
             for prefix in common_cmd_prefixes:
                 # 명령어로 시작하는지 확인 (공백이나 슬래시가 뒤따라야 함)
-                if line.lower().startswith(prefix.lower() + ' ') or line.lower().startswith(prefix.lower() + '/'):
+                pattern = f"^{prefix}\\s|^{prefix}/"
+                if re.search(pattern, line, re.IGNORECASE):
                     logger.info(f"명령어 찾음: {line}")
                     return line
             
@@ -1564,34 +1395,32 @@ def extract_command_from_response(response_text):
                 logger.info(f"파일 작업 명령어 찾음: {line}")
                 return line
         
+        # 두 번째 시도: 전체 응답에서 코드 블록 패턴 찾기
+        code_block_pattern = r'```(?:cmd|bat|bash|shell|powershell|)?\s*(.*?)\s*```'
+        matches = re.findall(code_block_pattern, cleaned_text, re.DOTALL)
+        
+        if matches:
+            for match in matches:
+                cmd = match.strip()
+                if cmd:
+                    logger.info(f"코드 블록에서 명령어 찾음: {cmd}")
+                    return cmd
+        
         # 마지막 시도: 응답에서 명령어 직접 추출
-        # 대화형 지시문에서 명령어 찾기 시도
+        # 일반적으로 '이 명령어가 ...' 라는 형식으로 표현됨
         for line in lines:
-            line = line.strip()
-            # "실행하세요", "입력하세요", "사용하세요" 등의 문장 다음에 나오는 텍스트 찾기
-            instruction_match = re.search(r'(실행|입력|사용|시도|해보세요|명령어)[^:]*?:\s*(.+)', line)
-            if instruction_match:
-                cmd_text = instruction_match.group(2).strip()
-                # 따옴표 제거 (' 또는 ")
-                cmd_text = re.sub(r'^[\'"`]|[\'"`]$', '', cmd_text)
-                if cmd_text and len(cmd_text) > 3:  # 최소 길이 확인
-                    logger.info(f"지시문에서 명령어 찾음: {cmd_text}")
-                    return cmd_text
-        
-        # 마지막 시도: 일반적인 명령어 패턴 찾기
-        cmd_patterns = [
-            r'`(dir\s+[^`]+)`',  # dir 명령어
-            r'`(cd\s+[^`]+)`',   # cd 명령어
-            r'`(type\s+[^`]+)`', # type 명령어
-            r'`(echo\s+[^`]+)`', # echo 명령어
-            r'`([a-zA-Z]:\\[^`]+)`', # 절대 경로
-        ]
-        
-        for pattern in cmd_patterns:
-            matches = re.findall(pattern, cleaned_text)
-            if matches:
-                logger.info(f"백틱 안에서 명령어 찾음: {matches[-1]}")
-                return matches[-1]
+            line = line.strip().lower()
+            for cmd_word in ["명령어", "command", "cmd", "실행"]:
+                if cmd_word in line:
+                    # 명령어 단어 이후의 텍스트에서 첫 번째 줄만 사용
+                    parts = line.split(cmd_word, 1)
+                    if len(parts) > 1 and parts[1]:
+                        cmd_text = parts[1].strip()
+                        # 특수 문자 제거
+                        cmd_text = re.sub(r'^[:\s"\'`]+', '', cmd_text)
+                        if cmd_text:
+                            logger.info(f"설명 텍스트에서 명령어 찾음: {cmd_text}")
+                            return cmd_text
         
         # 명령어를 찾지 못한 경우
         logger.warning("응답에서 명령어를 찾지 못했습니다")

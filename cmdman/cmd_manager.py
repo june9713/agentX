@@ -37,7 +37,7 @@ class PersistentCmdManager:
     @staticmethod
     def _pump(stream, q):
         for line in iter(stream.readline, ""):
-            print("line"  ,line)
+            #print(line)
             q.put(line)
             
     @staticmethod

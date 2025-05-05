@@ -75,7 +75,7 @@ class ClaudeMCPClient:
         # Chrome 연결
         print("Chrome에 연결 중...")
         response = await self.send_message("chrome", "connect", {
-            "url": "http://localhost:9222"
+            "url": "http://localhost:9333"
         })
         
         if not response or not response.get("success"):

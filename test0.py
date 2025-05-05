@@ -90,7 +90,7 @@ def main():
             "params": {
                 "name": "chrome_connect",
                 "arguments": {
-                    "port": 9222,
+                    "port": 9333,
                     "host": "localhost"
                 }
             }

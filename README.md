@@ -26,17 +26,17 @@ pip install -r requirements.txt
 
 Windows에서:
 ```bash
-"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9333
 ```
 
 macOS에서:
 ```bash
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9333
 ```
 
 Linux에서:
 ```bash
-google-chrome --remote-debugging-port=9222
+google-chrome --remote-debugging-port=9333
 ```
 
 ### MCP 서버 실행
@@ -55,7 +55,7 @@ python server.py
 
 ```python
 # 크롬 브라우저에 연결
-chrome_connect(port=9222, host="localhost")
+chrome_connect(port=9333, host="localhost")
 
 # 열린 탭 목록 확인
 chrome_list_tabs()

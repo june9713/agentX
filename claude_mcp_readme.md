@@ -43,7 +43,7 @@
     "chrome": {
       "enabled": true,
       "connection": {
-        "url": "http://localhost:9222",
+        "url": "http://localhost:9333",
         "debug": false
       }
     },
@@ -100,19 +100,19 @@ Chrome 핸들러를 테스트하기 위해서는 Chrome을 원격 디버깅 모�
 ### Windows:
 
 ```
-"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9333
 ```
 
 ### macOS:
 
 ```
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9333
 ```
 
 ### Linux:
 
 ```
-google-chrome --remote-debugging-port=9222
+google-chrome --remote-debugging-port=9333
 ```
 
 ## 메시지 형식
@@ -193,7 +193,7 @@ python src/test_mcp.py
 
 2. **Chrome 핸들러 오류**
    - Chrome이 원격 디버깅 모드로 실행 중인지 확인하세요.
-   - 포트 9222가 다른 프로세스에 의해 사용되고 있지 않은지 확인하세요.
+   - 포트 9333가 다른 프로세스에 의해 사용되고 있지 않은지 확인하세요.
 
 3. **Excel 핸들러 오류**
    - Excel이 설치되어 있고 사용 가능한지 확인하세요.
