@@ -22,7 +22,7 @@ from x64dbg_automate.models import PageRightsConfiguration, StandardBreakpointTy
 dbgClient = X64DbgClient("C:\\x64dbg\\release\\x64\\x64dbg.exe")
 
 # 커스텀 모듈 임포트
-from cmd_manager import get_cmd_manager
+from cmdman.cmd_manager import get_cmd_manager
 
 # 로깅 설정
 logging.basicConfig(
@@ -36,7 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 크롬 CDP 클라이언트 임포트
-from chrome_cdp_client import ChromeCDPClient, ChromeCDPSession
+from agents.chatgpt.chrome_cdp_client import ChromeCDPClient, ChromeCDPSession
 
 # Create an MCP server
 mcp = FastMCP("Chrome Debug Console MCP")

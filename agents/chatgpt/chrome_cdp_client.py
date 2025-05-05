@@ -13,7 +13,8 @@ import psutil
 import traceback
 import base64
 import logging
-from cmd_manager import *
+from cmdman.cmd_manager import *
+print("chatgpt.py 파일 로드 완료",PersistentCmdManager)
 
 
 
