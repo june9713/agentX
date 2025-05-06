@@ -13,6 +13,9 @@ import psutil
 import traceback
 import base64
 import logging
+# JSON에서 cmd 필드 추출
+import json
+import re
 from cmdman.cmd_manager import *
 print("chatgpt.py 파일 로드 완료",PersistentCmdManager)
 
@@ -142,7 +145,7 @@ def resize_window(hwnd, width, height, x=None, y=None):
         logger.error(f"Error resizing window: {e}")
         return False
 
-def start_browser(profile_name="Profile 1", position=(0, 0), size=(1024, 768)):
+def start_browser(profile_name="Default", position=(0, 0), size=(1024, 768)):
     """
     Brave 브라우저를 시작하고 디버깅 포트를 연결합니다.
     성능 최적화된 옵션 적용
@@ -150,7 +153,7 @@ def start_browser(profile_name="Profile 1", position=(0, 0), size=(1024, 768)):
     try:
         # 실행 중인 Brave 브라우저 종료
         for proc in psutil.process_iter(['name']):
-            if proc.info['name'] == "brave.exe":
+            if proc.info['name'] == "slimjet.exe":
                 logger.info("Closing existing Brave browser...")
                 try:
                     proc.kill()
@@ -172,8 +175,8 @@ def start_browser(profile_name="Profile 1", position=(0, 0), size=(1024, 768)):
             y = max(0, screen_height - height)
         
         # 브라우저 시작 명령 - 성능 최적화 옵션 추가
-        cmd = f'"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe" ' \
-              f'--remote-debugging-port=9222 ' \
+        cmd = r'"C:\Program Files\Slimjet\slimjet.exe" ' \
+              f'--remote-debugging-port=9333 ' \
               f'--window-size={width},{height} ' \
               f'--window-position={x},{y} ' \
               f'--profile-directory="{profile_name}" ' \
@@ -186,17 +189,33 @@ def start_browser(profile_name="Profile 1", position=(0, 0), size=(1024, 768)):
         logger.info(f"Starting browser with command: {cmd}")
         ps = subprocess.Popen(cmd)
         
+        cmd2 = r'"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"' \
+              f'--remote-debugging-port=9444' \
+              f'--window-size={width},{height} ' \
+              f'--window-position={x},{y} ' \
+              f'--profile-directory="Profile 1" ' \
+              f'--disable-extensions ' \
+              f'--disable-gpu ' \
+              f'--no-sandbox ' \
+              f'--disable-dev-shm-usage ' \
+              f'--disable-software-rasterizer'
+        
+        logger.info(f"Starting browser with command: {cmd}")
+        #ps2 = subprocess.Popen(cmd2)
+        
+        
+        
         # 브라우저가 시작되고 디버깅 포트가 준비될 때까지 기다림
         max_attempts = 10
         attempts = 0
         browser = None
-        
+        browser2 = None
+        tab = None
+        tab2 = None
         while attempts < max_attempts:
             try:
                 time.sleep(0.5)  # 대기 시간 감소 (1초 → 0.5초)
-                browser = pychrome.Browser(url="http://127.0.0.1:9222")
-                tab = browser.new_tab()
-                tab.start()
+                browser = pychrome.Browser(url="http://127.0.0.1:9333")
                 break
             except Exception as e:
                 logger.warning(f"Browser not ready yet, retrying... ({attempts+1}/{max_attempts})")
@@ -205,18 +224,51 @@ def start_browser(profile_name="Profile 1", position=(0, 0), size=(1024, 768)):
                     logger.error(f"Failed to connect to browser: {e}")
                     return None, None
         
+        while attempts < max_attempts:
+            try:
+                time.sleep(0.5)  # 대기 시간 감소 (1초 → 0.5)
+                tab = browser.new_tab()
+                tab.start()
+                break
+            except Exception as e:
+                logger.warning(f"tab1 not ready yet, retrying... ({attempts+1}/{max_attempts})")
+                attempts += 1
+                if attempts >= max_attempts:
+                    logger.error(f"Failed to connect to browser: {e}")
+                    return None, None
+        
+        while attempts < max_attempts:
+            try:
+                time.sleep(0.5)  # 대기 시간 감소 (1초 → 0.5초)
+                tab2 = browser.new_tab()
+                tab2.start()
+                break
+            except Exception as e:
+                logger.warning(f"tab2 not ready yet, retrying... ({attempts+1}/{max_attempts})")
+                attempts += 1
+                if attempts >= max_attempts:
+                    logger.error(f"Failed to connect to tab2: {e}")
+                    return None, None
+                
+                
+        
         # 네트워크 활성화 및 페이지 이동
         tab.Network.enable()
+        tab2.Network.enable()
         
         # ChatGPT 페이지로 직접 이동
-        url = "https://chatgpt.com/?model=gpt-4o"
+        url = "https://chatgpt.com/?model=gpt-4o&temporary-chat=false"
         logger.info(f"Navigating to {url}")
         tab.Page.navigate(url=url, _timeout=5)  # 타임아웃 감소 (10초 → 5초)
-        
         # 페이지 로딩 기다리기
         tab.wait(5)  # 대기 시간 감소 (10초 → 5초)
         
-        return browser, tab
+        if tab2:
+            url = "https://chatgpt.com/?model=gpt-4o-mini&temporary-chat=false"
+            tab2.Page.navigate(url=url, _timeout=5)  # 타임아웃 감소 (10초 → 5초)
+            tab2.wait(5)  # 대기 시간 감소 (10초 → 5초)
+
+        return browser, tab , browser2, tab2
     
     except Exception as e:
         logger.error(f"Error starting browser: {e}")
@@ -583,7 +635,7 @@ def main():
     try:
         # 브라우저 시작 및 페이지 로드 - 더 작은 사이즈로 시작 (메모리 사용 최적화)
         browser, tab = start_browser(
-            profile_name="Profile 1", 
+            profile_name="Default", 
             position=(10, 10), 
             size=(900, 700)  # 사이즈 감소 (1024x800 → 900x700)
         )
@@ -626,7 +678,7 @@ def main():
         
         # 브라우저 정리
         logger.info("Closing browser")
-        browser.close_tab(tab)
+        #browser.close_tab(tab)
         
     except Exception as e:
         logger.error(f"Unexpected error in main: {e}")
@@ -635,22 +687,136 @@ def main():
         # 종료 시 브라우저 프로세스 정리
         try:
             for proc in psutil.process_iter(['name']):
-                if proc.info['name'] == "brave.exe":
+                if proc.info['name'] == "slimjet.exe":
                     logger.info("Cleaning up browser process")
-                    proc.kill()
+                    #proc.kill()
         except:
             pass
 
-def execute_chatgpt_cmd_session(tab, query):
+
+def summery_answer(browser2, tab2, rsltstrpost, comment_of_this_cmd):
     """
-        사용자의 쿼리를 ChatGPT에 전달하고, CMD 명령을 실행한 후 결과를 주고받는 세션을 관리합니다.
+    사용자의 명령어 실행 결과를 ChatGPT-4o-mini에게 전송하여 요약 정보를 얻습니다.
+    
+    Args:
+        browser2: 브라우저 객체 (ChatGPT-4o-mini 탭)
+        tab2: 브라우저 탭 객체 (ChatGPT-4o-mini 탭)
+        rsltstrpost: 명령어 실행 결과 문자열
+    
+    Returns:
+        구조화된 결과 요약 문자열
+    """
+    try:
+        # 명령어 결과를 요약할 수 있는 프롬프트 작성
+        prompt = f"""작업 결과를 분석하여 아래 형식으로 간결하게 요약해주세요:
 
-        Args:
-            tab: 브라우저 탭 객체
-            query: 사용자의 초기 쿼리
+```
+이번 명령의 목적:
+{comment_of_this_cmd}
 
-        Returns:
-            최종 결과 문자열
+이번 명령의 결과:
+{rsltstrpost}
+```
+
+다음 형식으로 정확히 응답해주세요:
+purpose of command: [명령어의 목적]
+error: none | true
+error status: [오류가 있다면 오류 내용 설명, 없으면 'no error']
+summary of output: [전체 결과의 핵심 요약]
+
+응답은 위 형식만 정확히 포함해야 합니다. 다른 설명이나 텍스트는 포함하지 마세요."""
+
+        # ChatGPT-4o-mini에 프롬프트 전송
+        logger.info("Sending command results to ChatGPT-4o-mini for summarization")
+        send_query(tab2, prompt)
+        
+        # 응답 대기 - 요약은 비교적 빠르게 생성 가능하므로 타임아웃 감소
+        if not wait_for_response_complete(tab2, timeout=90):
+            logger.warning("Summary response waiting timed out")
+            return "요약 생성 시간 초과"
+            
+        # ChatGPT 응답 추출
+        js_code = """
+(function() {
+    try {
+        // 다양한 셀렉터로 응답 메시지 찾기
+        const selectors = [
+            '.markdown.prose', 
+            '.text-message .markdown',
+            '[data-message-author-role="assistant"] .markdown',
+            '.agent-turn .markdown',
+            'article .prose',
+            '.text-message'
+        ];
+        
+        let lastMessage = null;
+        for (const selector of selectors) {
+            const elements = document.querySelectorAll(selector);
+            if (elements.length > 0) {
+                lastMessage = elements[elements.length - 1];
+                break;
+            }
+        }
+        
+        if (!lastMessage) return '응답 메시지를 찾을 수 없음';
+        
+        // 1. 코드 블록 추출 시도 (hljs 클래스가 있는 code 태그)
+        const codeBlocks = lastMessage.querySelectorAll('code.hljs');
+        if (codeBlocks && codeBlocks.length > 0) {
+            return codeBlocks[codeBlocks.length - 1].textContent;
+        }
+        
+        // 2. 일반 code 태그 확인
+        const codeElements = lastMessage.querySelectorAll('code');
+        if (codeElements && codeElements.length > 0) {
+            return codeElements[codeElements.length - 1].textContent;
+        }
+        
+        // 3. pre 태그 내부 확인
+        const preElements = lastMessage.querySelectorAll('pre');
+        if (preElements && preElements.length > 0) {
+            // pre 태그 내부의 code 확인
+            const preCodeElements = preElements[preElements.length - 1].querySelectorAll('code');
+            if (preCodeElements && preCodeElements.length > 0) {
+                return preCodeElements[0].textContent;
+            }
+            return preElements[preElements.length - 1].textContent;
+        }
+        
+        // 4. 일반 텍스트 추출 (위의 모든 방법이 실패한 경우)
+        return lastMessage.textContent;
+    } catch (error) {
+        console.error('요약 추출 오류:', error);
+        return '오류: ' + error.toString();
+    }
+})();
+"""
+        
+        result = tab2.Runtime.evaluate(expression=js_code)
+        response_text = result.get('result', {}).get('value', "")
+        
+        if not response_text or response_text.startswith('오류:') or response_text == '응답 메시지를 찾을 수 없음':
+            logger.warning(f"No valid summary response found: {response_text}")
+            return "요약 응답을 찾을 수 없습니다"
+            
+        logger.info(f"Summary generated ({len(response_text)} characters)")
+        return response_text
+        
+    except Exception as e:
+        logger.error(f"Error in summery_answer: {e}")
+        logger.error(traceback.format_exc())
+        return f"요약 생성 중 오류 발생: {str(e)}"
+
+def execute_chatgpt_cmd_session(browser, tab, browser2, tab2, query):
+    """
+    사용자의 쿼리를 ChatGPT에 전달하고, CMD 명령을 실행한 후 결과를 주고받는 세션을 관리합니다.
+
+    Args:
+        tab: 브라우저 탭 객체
+        query: 사용자의 초기 쿼리
+
+    Returns:
+        최종 결과 문자열
     """
     try:
         logger.info(f"Starting ChatGPT CMD session with query: {query}")
@@ -671,12 +837,26 @@ def execute_chatgpt_cmd_session(tab, query):
 주의: 항상 작업을 위한 디렉토리로 먼저 이동을 한 뒤에 본격적인 작업을 시작합니다.
 {query}
 
-이 작업을 수행하기 위한 윈도우즈 CMD 명령어 시퀀스를 하나씩 제공해주세요. 각 명령어 실행 결과를 확인한 후 다음 명령어를 제시하겠습니다.
+이 작업을 수행하기 위한 윈도우즈 CMD 명령어 시퀀스를 단계적으로 제공해주세요.
+첫번째째 명령어 실행 결과를 확인한 후 다음 명령어를 제시하겠습니다.
 
-작업이 완료되면 반드시 다음의 명령어로 명확하게 종료를 표시해주세요:
-echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"complete","timestamp":"%date% %time%","message":"에이전트작업완료"}}
+cmd 명령어는 다음과 같은 json형식으로 출력합니다.
 
-불필요한 설명은 절대 하지 않고 모두 코드로만 대화 합니다"""
+{{ "aim": aim of this command,
+"cmd" : cmd code for aim
+}}
+
+예를 들어 d: 의 파일목록을 조회 한다면
+{{ "aim": "search list of files in D:",
+"cmd" : "dir d:"
+}}
+
+이전 명령을 확인한 결과 완료된 것으로 판단되어 다음 명령어가 필요 없다면 다음의 형태로로 명확하게 종료를 표시해주세요:
+{{ "aim": "terminated",
+"cmd" : "terminated":
+}}
+
+불필요한 설명을 절대 하지 않습니다."""
 
         logger.info("Sending initial prompt to ChatGPT")
         send_query(tab, initial_prompt)
@@ -688,7 +868,7 @@ echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"comple
         time.sleep(1)
         
         # 명령어 실행 및 결과 전송 루프
-        max_iterations = 10  # 안전을 위한 최대 반복 횟수
+        max_iterations = 5  # 안전을 위한 최대 반복 횟수
         iteration = 0
         final_result = ""
 
@@ -713,10 +893,8 @@ echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"comple
             # ChatGPT 응답에서 명령어 추출
             js_code = """
 (function() {
-   // 코드 블록만 추출 (일반 텍스트 제외)
-   const codeBlockCommands = [];
-   
-   const selectors = [
+    // 셀렉터를 통해 응답 메시지 찾기
+    const selectors = [
         '.markdown.prose', 
         '.text-message .markdown',
         '[data-message-author-role="assistant"] .markdown',
@@ -734,46 +912,95 @@ echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"comple
             break;
         }
     }
-   
-   // 2. whitespace-pre 및 language 클래스를 가진 요소 추출
-   const whitespacePreElements = document.querySelectorAll('[class*="whitespace-pre"]');
-   if(whitespacePreElements.length > 0){
-       codeBlockCommands.push(whitespacePreElements[whitespacePreElements.length - 1].textContent);
-   }
-   
-   // 완료 확인 - 개선된 패턴 확인
-   const fullText = lastMessage ? lastMessage.textContent : '';
-   const hasResult = 
-       fullText.includes('##TASK_COMPLETE##') || 
-       fullText.includes('{"status":"complete"') || 
-       fullText.includes('에이전트작업완료') ||
-       (fullText.includes('task_complete.flag') && fullText.includes('작업완료'));
-   
-   // 코드 블록이 없고 결과 메시지도 없으면 빈 문자열 반환
-   if (codeBlockCommands.length === 0 && !hasResult) {
-       return '';
-   }
-   
-   // 코드 블록이 있으면 코드 블록만 반환, 없으면서 결과 메시지가 있으면 결과 메시지 반환
-   if (codeBlockCommands.length > 0) {
-       return codeBlockCommands.join('\\n\\n');
-   } else if (hasResult) {
-       return fullText;
-   }
-   
-   return '';
+    
+    // 메시지를 찾지 못한 경우
+    if (!lastMessage) {
+        return '';
+    }
+    
+    // 메시지 텍스트 추출
+    const fullText = lastMessage.textContent || '';
+    
+    // JSON 형식 명령어 추출 시도
+    try {
+        // JSON 포맷 추출 (다양한 형태 지원)
+        // 1. {로 시작하고 }로 끝나는 텍스트 추출
+        const jsonRegex = /\\{[^\\{\\}]*"aim"\\s*:\\s*"[^"]*"[^\\{\\}]*"cmd"\\s*:\\s*"[^"]*"[^\\{\\}]*\\}/g;
+        const jsonMatches = fullText.match(jsonRegex);
+        
+        if (jsonMatches && jsonMatches.length > 0) {
+            // 가장 마지막 JSON 포맷 반환
+            return jsonMatches[jsonMatches.length - 1];
+        }
+        
+        // 2. 코드 블록에서 JSON 추출 시도 - pre 및 code 태그 내용 확인
+        const codeElements = lastMessage.querySelectorAll('code');
+        if (codeElements && codeElements.length > 0) {
+            // 마지막 코드 블록의 텍스트 내용
+            const codeText = codeElements[codeElements.length - 1].textContent;
+            // 코드 블록 내에서 JSON 찾기
+            const codeJsonMatches = codeText.match(jsonRegex);
+            if (codeJsonMatches && codeJsonMatches.length > 0) {
+                return codeJsonMatches[codeJsonMatches.length - 1];
+            }
+        }
+        
+        // 3. 텍스트에서 정규식을 사용한 코드 블록 추출
+        const codeBlockRegex = /```(?:json)?([^`]+)```/g;
+        const codeMatches = [];
+        let match;
+        while ((match = codeBlockRegex.exec(fullText)) !== null) {
+            codeMatches.push(match[1].trim());
+        }
+        
+        if (codeMatches.length > 0) {
+            const lastCodeBlock = codeMatches[codeMatches.length - 1];
+            // 코드 블록 내용에서 JSON 형식 찾기
+            const jsonInCodeRegex = /\\{[^\\{\\}]*"aim"\\s*:\\s*"[^"]*"[^\\{\\}]*"cmd"\\s*:\\s*"[^"]*"[^\\{\\}]*\\}/g;
+            const jsonInCodeMatches = lastCodeBlock.match(jsonInCodeRegex);
+            
+            if (jsonInCodeMatches && jsonInCodeMatches.length > 0) {
+                return jsonInCodeMatches[jsonInCodeMatches.length - 1];
+            }
+            
+            // JSON 형식이 아닌 일반 코드 블록 반환
+            return lastCodeBlock;
+        }
+        
+        // 4. 기존 완료 패턴 확인
+        const hasResult = 
+            fullText.includes('##TASK_COMPLETE##') || 
+            fullText.includes('{"status":"complete"') || 
+            fullText.includes('에이전트작업완료') ||
+            (fullText.includes('task_complete.flag') && fullText.includes('작업완료')) ||
+            fullText.includes('"aim": "terminated"');
+        
+        if (hasResult) {
+            // 종료 메시지인 경우 전체 텍스트 반환
+            return fullText;
+        }
+        
+        // JSON 형식이 없고 코드 블록도 없는 경우 빈 문자열 반환
+        return '';
+        
+    } catch (error) {
+        // 오류 발생 시 원본 텍스트 반환
+        console.error('JSON 추출 오류:', error);
+        return fullText;
+    }
 })();
 """
-           
+            
             result = tab.Runtime.evaluate(expression=js_code)
             response_text = result.get('result', {}).get('value', "")
-            print("response_text", result)
+            print("Command response:", response_text[:100])
             
             # 응답 텍스트에서 명령어 추출 또는 완료 여부 확인
             if any(marker in response_text for marker in [
                 "##TASK_COMPLETE##", 
                 "\"status\":\"complete\"", 
-                "에이전트작업완료"
+                "에이전트작업완료", 
+                "\"aim\": \"terminated\""
             ]):
                 logger.info("Task completion detected in response")
                 final_result = response_text
@@ -781,11 +1008,65 @@ echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"comple
                 
             # 코드 블록에서 추출한 명령어가 있으면 실행
             cmd_to_execute = response_text.strip() if response_text else None
+            comment_of_this_cmd = ''
+            
+            # JSON에서 cmd 필드 추출
+            try:
+                # JSON 형식 추출 시도
+                json_pattern = r'\{.*"aim"\s*:\s*"[^"]*".*"cmd"\s*:\s*"[^"]*".*\}'
+                json_match = re.search(json_pattern, cmd_to_execute, re.DOTALL)
+                
+                if json_match:
+                    json_str = json_match.group(0)
+                    # JSON 문자열 정규화 - 따옴표 확인 및 백슬래시 이스케이프 처리
+                    json_str = json_str.replace("'", '"')
+                    
+                    # 백슬래시 문제 해결
+                    # 1. 모든 백슬래시를 임시 토큰으로 변환
+                    json_str = json_str.replace('\\', '___BACKSLASH___')
+                    # 2. 임시 토큰을 이스케이프된 백슬래시로 변환
+                    json_str = json_str.replace('___BACKSLASH___', '\\\\')
+                    
+                    # JSON 유효성 확인 및 정규화
+                    try:
+                        # 정규화된 JSON 문자열 파싱
+                        json_data = json.loads(json_str)
+                        
+                        if "aim" in json_data and "cmd" in json_data:
+                            comment_of_this_cmd = json_data["aim"]
+                            cmd_to_execute = json_data["cmd"]
+                            
+                            # 종료 명령 확인
+                            if cmd_to_execute == "terminated":
+                                logger.info("Termination command detected")
+                                final_result = f"작업이 완료되었습니다.\n\n목표: {comment_of_this_cmd}"
+                                break
+                    except json.JSONDecodeError as je:
+                        # JSON 파싱 실패 시 직접 추출 시도
+                        logger.warning(f"JSON parsing failed: {je}, trying direct extraction")
+                        
+                        # 정규식으로 aim과 cmd 직접 추출
+                        aim_match = re.search(r'"aim"\s*:\s*"([^"]*)"', json_str)
+                        cmd_match = re.search(r'"cmd"\s*:\s*"([^"]*)"', json_str)
+                        
+                        if aim_match and cmd_match:
+                            comment_of_this_cmd = aim_match.group(1)
+                            cmd_to_execute = cmd_match.group(1)
+                            
+                            # 종료 명령 확인
+                            if cmd_to_execute == "terminated":
+                                logger.info("Termination command detected")
+                                final_result = f"작업이 완료되었습니다.\n\n목표: {comment_of_this_cmd}"
+                                break
+            except Exception as e:
+                logger.warning(f"Error parsing JSON command: {e}")
+                # JSON 파싱 오류 시 원본 사용
+            
             print("cmd_to_execute", cmd_to_execute)
             
             if not cmd_to_execute:
                 logger.warning("No command found in response")
-                send_query(tab, "명령어를 찾을 수 없습니다. CMD 명령어를 코드 블록으로 명확하게 제시해주세요.")
+                send_query(tab, "명령어를 찾을 수 없습니다. JSON 형식으로 명확하게 제시해주세요.")
                 
                 if not wait_for_response_complete(tab, timeout=300):
                     logger.warning("Response waiting timed out")
@@ -804,29 +1085,104 @@ echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"comple
             rsltstrpost = '\n\n---작업 후의 dir 결과 ---\n'
             rsltstrpost += cmd_resultpost['stdout'].strip()
             rsltstrpost += cmd_resultpost['stderr'].strip()
-            
+            rsltstr_summried = summery_answer(browser2, tab2, rsltstrpost, comment_of_this_cmd)
+            print("rsltstr_summried", rsltstr_summried)
             # 실행 결과 준비
-            if cmd_result["success"]:
+            if True:#cmd_result["success"]:
                 # 지정된 형식으로 결과 구성
                 formatted_output = cmd_result.get('formatted_output', '')
                 
                 # 형식이 없는 경우 이전 방식으로 구성
                 if not formatted_output:
                     rsltstr = "----stdout---\n" + cmd_result['stdout'] + "\n\n---stderr---\n" + cmd_result['stderr']
-                    result_message = f"""명령어 실행 결과:\n{rsltstrpre}\n----명령어 실행 결과----\n{rsltstr}\n{rsltstrpost}\n현재의 로그 콘솔을 통해 원하는 작업이 실행이 되었는지 확인 후, 아니라고 생각한다면 계획을 수정하여 다음 명령어를 제시하거나, 모든 작업이 완료되었다고 판단되는 경우에는 다음의 명령어를 실행하세요:
+                    result_message = f"""
+----에이전트의 최종목표----
+{query}
+----현재의 명령어 실행 결과----
+{rsltstr}
 
-echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"complete","timestamp":"%date% %time%","message":"에이전트작업완료"}}"""
+----결과 요약----
+{rsltstr_summried}
+
+현재의 로그 콘솔을 통해 원하는 작업이 실행이 되었는지 확인 후, 아니라고 생각한다면 계획을 수정하여 다음 명령어를 제시하세요.
+
+cmd 명령어는 다음과 같은 json형식으로 출력합니다.
+
+{{ "aim": aim of this command,
+"cmd" : cmd code for aim
+}}
+
+예를 들어 d: 의 파일목록을 조회 한다면
+{{ "aim": "search list of files in D:",
+"cmd" : "dir d:"
+}}
+
+이전 명령을 확인한 결과 완료된 것으로 판단되어 다음 명령어가 필요 없다면 다음의 형태로로 명확하게 종료를 표시해주세요:
+{{ "aim": "terminated",
+"cmd" : "terminated"
+}}
+"""
                 else:
                     # 새로운 형식 사용
-                    result_message = f"""명령어 실행 결과:\n{rsltstrpre}----명령어 실행 결과----\n{formatted_output}\n{rsltstrpost}\n현재의 로그 콘솔을 통해 원하는 작업이 실행이 되었는지 확인 후, 아니라고 생각한다면 계획을 수정하여 다음 명령어를 제시하거나, 모든 작업이 완료되었다고 판단되는 경우에는 다음의 명령어를 실행하세요:
+                    result_message = f"""
+----에이전트의 최종목표----
+{query}
 
-echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"complete","timestamp":"%date% %time%","message":"에이전트작업완료"}}"""
+----현재의 명령어 실행 결과----
+{formatted_output}
+
+----결과 요약----
+{rsltstr_summried}
+
+현재의 로그 콘솔을 통해 원하는 작업이 실행이 되었는지 확인 후, 아니라고 생각한다면 계획을 수정하여 다음 명령어를 제시하세요
+
+cmd 명령어는 다음과 같은 json형식으로 출력합니다.
+
+{{ "aim": aim of this command,
+"cmd" : cmd code for aim
+}}
+
+예를 들어 d: 의 파일목록을 조회 한다면
+{{ "aim": "search list of files in D:",
+"cmd" : "dir d:"
+}}
+
+이전 명령을 확인한 결과 완료된 것으로 판단되어 다음 명령어가 필요 없다면 다음의 형태로로 명확하게 종료를 표시해주세요:
+{{ "aim": "terminated",
+"cmd" : "terminated"
+}}
+"""
             else:
                 error_output = cmd_result["stderr"] if cmd_result["stderr"] else "알 수 없는 오류"
-                result_message = f"""명령어 실행 중 오류 발생:\n{rsltstrpre}\n----명령어 실행 오류----\n{error_output}\n{rsltstrpost}\n현재의 로그 콘솔을 통해 원하는 작업이 실행이 되었는지 확인 후, 아니라고 생각한다면 계획을 수정하여 다음 명령어를 제시하거나, 모든 작업이 완료되었다고 판단되는 경우에는 다음의 명령어를 실행하세요:
+                result_message = f"""
+----에이전트의 최종목표----
+{query}
 
-echo ##TASK_COMPLETE##[%random%] > task_complete.flag && echo {{"status":"complete","timestamp":"%date% %time%","message":"에이전트작업완료"}}"""
-           
+----명령어 실행 오류----
+{error_output}
+
+----결과 요약----
+{rsltstr_summried}
+
+현재의 로그 콘솔을 통해 원하는 작업이 실행이 되었는지 확인 후, 아니라고 생각한다면 계획을 수정하여 다음 명령어를 제시하세요.
+
+cmd 명령어는 다음과 같은 json형식으로 출력합니다.
+
+{{ "aim": aim of this command,
+"cmd" : cmd code for aim
+}}
+
+예를 들어 d: 의 파일목록을 조회 한다면
+{{ "aim": "search list of files in D:",
+"cmd" : "dir d:"
+}}
+
+이전 명령을 확인한 결과 완료된 것으로 판단되어 다음 명령어가 필요 없다면 다음의 형태로로 명확하게 종료를 표시해주세요:
+{{ "aim": "terminated",
+"cmd" : "terminated"
+}}
+"""
+            
             # 결과 전송
             send_query(tab, result_message)
             
@@ -961,11 +1317,11 @@ def cmd_session_main():
         
         # 브라우저 시작 및 페이지 로드
         logger.info("Starting browser for CMD session")
-        browser, tab = start_browser(
-            profile_name="Profile 1", 
-            position=(10, 10), 
-            size=(900, 700)
-        )
+        browser, tab, browser2, tab2 = start_browser(
+                profile_name="Default", 
+                position=(10, 10), 
+                size=(900, 700)  # 사이즈 감소 (1024x800 → 900x700)
+            )
         
         if not browser or not tab:
             logger.error("Failed to start browser or open tab")
@@ -977,7 +1333,7 @@ def cmd_session_main():
             return
             
         # CMD 세션 실행
-        result = execute_chatgpt_cmd_session(tab, user_query)
+        result = execute_chatgpt_cmd_session(browser, tab, browser2, tab2, user_query)
         
         # 결과 출력
         print("\n--- 작업 결과 ---")
@@ -985,7 +1341,7 @@ def cmd_session_main():
         
         # 브라우저 정리
         logger.info("Closing browser")
-        browser.close_tab(tab)
+        #browser.close_tab(tab)
         
     except Exception as e:
         logger.error(f"Unexpected error in CMD session: {e}")
@@ -994,9 +1350,9 @@ def cmd_session_main():
         # 종료 시 브라우저 프로세스 정리
         try:
             for proc in psutil.process_iter(['name']):
-                if proc.info['name'] == "brave.exe":
+                if proc.info['name'] == "slimjet.exe":
                     logger.info("Cleaning up browser process")
-                    proc.kill()
+                    #proc.kill()
         except:
             pass
 
@@ -1015,8 +1371,8 @@ def newmain():
         else:
             # 기존 main 함수 내용 (코드 분석 및 수정 기능)
             # 브라우저 시작 및 페이지 로드 - 더 작은 사이즈로 시작 (메모리 사용 최적화)
-            browser, tab = start_browser(
-                profile_name="Profile 1", 
+            browser, tab, browser2, tab2 = start_browser(
+                profile_name="Default", 
                 position=(10, 10), 
                 size=(900, 700)  # 사이즈 감소 (1024x800 → 900x700)
             )
@@ -1048,7 +1404,7 @@ def newmain():
             
             # 브라우저 정리
             logger.info("Closing browser")
-            browser.close_tab(tab)
+            #browser.close_tab(tab)
         
     except Exception as e:
         logger.error(f"Unexpected error in main: {e}")
@@ -1057,9 +1413,9 @@ def newmain():
         # 종료 시 브라우저 프로세스 정리
         try:
             for proc in psutil.process_iter(['name']):
-                if proc.info['name'] == "brave.exe":
+                if proc.info['name'] == "slimjet.exe":
                     logger.info("Cleaning up browser process")
-                    proc.kill()
+                    #proc.kill()
         except:
             pass
 
