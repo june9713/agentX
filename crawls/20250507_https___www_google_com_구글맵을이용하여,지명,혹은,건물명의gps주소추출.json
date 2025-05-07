@@ -1,0 +1,25 @@
+{
+  "raw_response": "{\n  \"page_structure\": \"The HTML source file contains standard HTML structure, but most dynamic content and map-related functionality seem to be controlled by JavaScript. The page likely relies on embedded Google Maps components for rendering places and GPS data.\",\n  \"target_elements\": [\n    \"Place names\",\n    \"GPS coordinates (latitude, longitude)\",\n    \"Building names\"\n  ],\n  \"selectors\": {\n    \"place_name\": \"div[data-place-name]\",\n    \"gps_coordinates\": \"span[data-latitude], span[data-longitude]\",\n    \"building_name\": \"div[class='building-name']\"\n  },\n  \"crawling_method\": \"To extract the place names, GPS coordinates, and building names, we will leverage Python's `requests` library to fetch the page's HTML content. JavaScript rendering (for dynamic data) will require `Selenium` or `Pyppeteer` to execute scripts and render content before scraping.\",\n  \"python_code\": \"\nimport requests\nfrom bs4 import BeautifulSoup\n\n# Step 1: Fetch the page content\nurl = 'URL_OF_THE_PAGE'\nresponse = requ",
+  "downloaded_resources": [
+    {
+      "url": "https://www.google.com/js/bg/WoPaE2mq60DTK3OwQS1D3OIs-_mnZwcXVJ7IMupAjSI.js",
+      "local_path": "./tmp/crawl\\WoPaE2mq60DTK3OwQS1D3OIs-_mnZwcXVJ7IMupAjSI.js",
+      "type": "js",
+      "filename": "WoPaE2mq60DTK3OwQS1D3OIs-_mnZwcXVJ7IMupAjSI.js",
+      "size": 58655
+    }
+  ],
+  "uploaded_resources": [
+    {
+      "url": "https://www.google.com/js/bg/WoPaE2mq60DTK3OwQS1D3OIs-_mnZwcXVJ7IMupAjSI.js",
+      "local_path": "./tmp/crawl\\WoPaE2mq60DTK3OwQS1D3OIs-_mnZwcXVJ7IMupAjSI.js",
+      "type": "js",
+      "filename": "WoPaE2mq60DTK3OwQS1D3OIs-_mnZwcXVJ7IMupAjSI.js",
+      "size": 58655
+    }
+  ],
+  "target_url": "https://www.google.com",
+  "purpose": "구글맵을이용하여,지명,혹은,건물명의gps주소추출",
+  "date": "20250507",
+  "html_file": "./tmp/crawl\\20250507_https___www_google_com_source.html"
+}
