@@ -1,0 +1,843 @@
+import win32ui
+import win32gui
+import win32con
+import numpy as np
+import cv2
+import time
+import pyautogui
+import os
+import subprocess
+import win32api
+import pychrome
+import psutil
+import traceback
+import base64
+import logging
+# JSON에서 cmd 필드 추출
+import json
+import re
+from cmdman.cmd_manager import *
+
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("myagent.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+print("chatgpt.py 파일 로드 완료", PersistentCmdManager)
+
+class ChromeCDPClient:
+    """
+    Chrome DevTools Protocol 클라이언트 클래스
+    ChatGPT와의 상호작용 및 브라우저 제어를 위한 클래스
+    """
+    
+    def __init__(self):
+        """
+        ChromeCDPClient 클래스 초기화
+        """
+        self.browser = None
+        self.tab = None
+        self.tab2 = None
+        self.pythonpath = None
+        
+        # 디버그용 로깅 설정
+        self.setup_debug_logging()
+        
+        self.start_browser()
+        
+    def setup_debug_logging(self):
+        """
+        웹소켓 디버깅을 위한 추가 로깅 설정
+        """
+        try:
+            # Import pychrome tab
+            import pychrome.tab
+            from pychrome.tab import Tab
+            
+            # Check if Tab class has the expected behavior for websocket
+            # Instead of directly accessing _recv attribute which may not exist in newer versions
+            if hasattr(Tab, 'recv'):
+                # If there's a recv method, we can monkey patch that
+                original_recv = Tab.recv
+                
+                def debug_recv(self, *args, **kwargs):
+                    try:
+                        message = original_recv(self, *args, **kwargs)
+                        logger.debug(f"WebSocket received (len={len(str(message))}): {str(message)[:100]}...")
+                        return message
+                    except Exception as e:
+                        logger.error(f"Error in WebSocket receive: {e}")
+                        return None
+                
+                Tab.recv = debug_recv
+                logger.info("Applied WebSocket debug patch to pychrome.tab.Tab.recv")
+            elif hasattr(Tab, '_recv'):
+                # Original approach for older versions
+                original_recv = Tab._recv
+                
+                def debug_recv(self):
+                    try:
+                        message_json = self._ws.recv()
+                        logger.debug(f"WebSocket received (len={len(message_json)}): {message_json[:100]}...")
+                        
+                        if not message_json:
+                            logger.warning("Received empty message from WebSocket")
+                            return None
+                        
+                        try:
+                            message = json.loads(message_json)
+                            return message
+                        except json.JSONDecodeError as e:
+                            logger.error(f"JSON decode error: {e}")
+                            logger.error(f"Raw message content (first 200 chars): {message_json[:200]}")
+                            if len(message_json) < 10:
+                                logger.error(f"Very short message, hex: {' '.join(hex(ord(c)) for c in message_json)}")
+                            return None
+                    except Exception as e:
+                        logger.error(f"Error in WebSocket receive: {e}")
+                        return None
+                
+                Tab._recv = debug_recv
+                logger.info("Applied WebSocket debug patch to pychrome.tab.Tab._recv")
+            else:
+                # If we can't find either method, log a warning but continue
+                logger.warning("Could not apply WebSocket debug patch to pychrome - neither Tab._recv nor Tab.recv found")
+                logger.info("Continuing without WebSocket debugging")
+        except Exception as e:
+            logger.warning(f"Error setting up debug logging: {e}")
+            logger.info("Continuing without WebSocket debugging")
+
+    def capture_window(self, hwnd):
+        """
+        윈도우 핸들로부터 스크린샷을 캡처합니다.
+        성능 최적화 버전
+        """
+        try:
+            # 윈도우 핸들로부터 윈도우 크기 정보 획득
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            width = right - left
+            height = bottom - top
+            
+            # 윈도우 크기가 너무 크면 축소 (메모리 사용 최적화)
+            scale_factor = 1.0
+            max_dimension = 1920  # 최대 치수 제한
+            
+            if width > max_dimension or height > max_dimension:
+                scale_factor = min(max_dimension / width, max_dimension / height)
+                target_width = int(width * scale_factor)
+                target_height = int(height * scale_factor)
+            else:
+                target_width = width
+                target_height = height
+
+            # 윈도우 DC 생성
+            window_dc = win32gui.GetWindowDC(hwnd)
+            dc_obj = win32ui.CreateDCFromHandle(window_dc)
+            compatible_dc = dc_obj.CreateCompatibleDC()
+
+            # 비트맵 생성
+            dataBitMap = win32ui.CreateBitmap()
+            dataBitMap.CreateCompatibleBitmap(dc_obj, width, height)
+            compatible_dc.SelectObject(dataBitMap)
+
+            # BitBlt로 화면 캡처
+            compatible_dc.BitBlt((0, 0), (width, height), dc_obj, (0, 0), win32con.SRCCOPY)
+
+            # 비트맵 정보를 numpy 배열로 변환
+            signedIntsArray = dataBitMap.GetBitmapBits(True)
+            img = np.frombuffer(signedIntsArray, dtype='uint8')
+            img.shape = (height, width, 4)
+
+            # BGR 형식의 CV2 이미지로 변환
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            
+            # 필요한 경우 이미지 크기 조정 (메모리 및 처리 시간 최적화)
+            if scale_factor < 1.0:
+                img = cv2.resize(img, (target_width, target_height), interpolation=cv2.INTER_AREA)
+
+            # 메모리 해제
+            dc_obj.DeleteDC()
+            compatible_dc.DeleteDC()
+            win32gui.ReleaseDC(hwnd, window_dc)
+            win32gui.DeleteObject(dataBitMap.GetHandle())
+
+            return img
+        except Exception as e:
+            logger.error(f"Error capturing window: {e}")
+            logger.error(traceback.format_exc())
+            return None
+
+    def bring_to_foreground(self, hwnd):
+        """
+        창을 전면으로 가져옵니다.
+        """
+        try:
+            # 현재 윈도우가 최소화되어 있는지 확인
+            if win32gui.IsIconic(hwnd):
+                # 최소화되어 있다면 복원
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            
+            # Alt 키 시뮬레이션으로 포커스 변경 문제 방지
+            pyautogui.keyDown('alt')
+            pyautogui.keyUp('alt')
+            
+            # 윈도우를 최상단으로 가져오기
+            win32gui.SetForegroundWindow(hwnd)
+            win32gui.BringWindowToTop(hwnd)
+            win32gui.SetActiveWindow(hwnd)
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error bringing window to foreground: {e}")
+            return False
+
+    def resize_window(self, hwnd, width, height, x=None, y=None):
+        """
+        윈도우 크기를 변경합니다.
+        """
+        try:
+            # 현재 윈도우의 위치와 크기 정보 가져오기
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            
+            # x, y 위치가 지정되지 않은 경우 현재 위치 사용
+            if x is None:
+                x = left
+            if y is None:
+                y = top
+            
+            # 윈도우 이동 및 크기 조절
+            win32gui.SetWindowPos(
+                hwnd,
+                win32con.HWND_TOP,
+                x,
+                y,
+                width,
+                height,
+                win32con.SWP_SHOWWINDOW
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error resizing window: {e}")
+            return False
+
+        
+    def analisys_crawl_page(self, browser, url, purpose):
+        """
+        크롤링 페이지를 분석하고 필요한 정보를 추출합니다.
+        tab 을 새로 생성하고 url 로 접속하여 html 소스를 확인하고
+        각 엘리먼트와 js 소스를 분석하여 purpose 에 맞는 크롤링 방법을 확인합니다.
+        만약 온라인 js,css 소스를 다운로드 해야 한다면 requests 모듈을 사용하여 다운로드 합니다.
+        다운받은 소스파일들은 ./tmp/crawl 에 저장한뒤에
+        크롤링 페이지의 크롤링 방법을 확인하고 결과를 추후에 다시 웹자동화에 사용할수있도록
+        파일로 정리하여 ./crawls 폴더에 {날짜}{특수문자를 제거한 url}{purpose} 파일로 저장합니다.
+        
+        순서는 다음과 같습니다.
+        1. 새로운 탭 생성
+        2. 해당 웹페이지 접속
+        3. 페이지 로드가 완료되면 html 파일을 tmp/crawl 폴더에 저장
+        4. 해당 파일을 chatgpt 에 전달하여 크롤링 방법을 확인
+        5. 챗지피티는 추가 필요 소스파일이 필요할 경우 온라인에서 다운로드
+        6. 챗지피티는 크롤링 방법을 확인하고 결과를 추후에 다시 웹자동화에 사용할수있도록
+        파일로 정리하여 ./crawls 폴더에 {날짜}{특수문자를 제거한 url}{purpose} 파일로 저장
+        7. 필요한 경우 다양한 반복 분석을 통해 원하는 결과가 나올 때까지 진행합니다.
+        """
+        try:
+            import os
+            import re
+            import time
+            import datetime
+            import requests
+            import json
+            from urllib.parse import urljoin, urlparse
+            
+            # 필요한 디렉토리 생성
+            tmp_dir = "./tmp/crawl"  # 'claw'에서 'crawl'로 수정
+            crawls_dir = "./crawls"
+            os.makedirs(tmp_dir, exist_ok=True)
+            os.makedirs(crawls_dir, exist_ok=True)
+            
+            # 현재 날짜 가져오기
+            current_date = datetime.datetime.now().strftime("%Y%m%d")
+            
+            # URL에서 특수문자 제거하여 파일 이름 만들기
+            url_filename = re.sub(r'[^\w]', '_', url)
+            if len(url_filename) > 50:  # 파일명 길이 제한
+                url_filename = url_filename[:50]
+            
+            # 결과 파일 경로 생성
+            result_filename = f"{current_date}_{url_filename}_{purpose}.json"
+            result_path = os.path.join(crawls_dir, result_filename)
+            
+            logger.info(f"Starting crawl analysis for URL: {url}")
+            logger.info(f"Purpose: {purpose}")
+            
+            # 1. 새로운 탭 생성
+            logger.info("1. Creating new tab")
+            crawl_tab = browser.new_tab()
+            crawl_tab_id = crawl_tab.id  # 나중에 탭 닫을 때 필요
+            logger.info(f"Created new tab with ID: {crawl_tab_id}")
+            
+            crawl_tab.start()
+            logger.info("Tab WebSocket connection started")
+            
+            # 네트워크 및 페이지 활성화
+            crawl_tab.Network.enable()
+            crawl_tab.Page.enable()
+            browser.activate_tab(crawl_tab_id)
+            logger.info("Network and Page domains enabled and tab activated")
+            
+            # 네트워크 요청 및 응답 저장을 위한 리스트
+            resources = []
+            
+            # 네트워크 요청 이벤트 리스너 설정
+            def network_request_will_be_sent(request, **kwargs):
+                resources.append({
+                    'url': request.get('url'),
+                    'type': request.get('resourceType', ''),
+                    'downloaded': False
+                })
+            
+            crawl_tab.Network.requestWillBeSent = network_request_will_be_sent
+            logger.info("Network request listener registered")
+            
+            # 2. 해당 웹페이지 접속
+            logger.info(f"2. Navigating to URL: {url}")
+            crawl_tab.Page.navigate(url=url)
+            
+            # 페이지 로드 완료 기다리기
+            logger.info("Waiting for page load to complete")
+            
+            # DOM 완료 이벤트 대기 - wait_event는 직접 호출이 아닌 이벤트 리스너로 설정
+            page_loaded = False
+            
+            def on_page_load_event(**kwargs):
+                nonlocal page_loaded
+                page_loaded = True
+                logger.info("Page load event fired")
+                
+            # 이벤트 리스너 등록
+            crawl_tab.Page.loadEventFired = on_page_load_event
+            
+            # 타임아웃 설정
+            load_timeout = 30
+            start_time = time.time()
+            
+            # 페이지 로드 대기
+            while not page_loaded and time.time() - start_time < load_timeout:
+                time.sleep(0.5)
+                
+            if not page_loaded:
+                logger.warning(f"Page load timeout after {load_timeout} seconds")
+                
+            # 추가 시간 대기 (JavaScript 실행 완료를 위해)
+            time.sleep(5)
+            
+            # 3. 페이지 로드가 완료되면 html 파일을 tmp/crawl 폴더에 저장
+            logger.info("3. Saving HTML content")
+            
+            # 현재 HTML 내용 가져오기
+            result = crawl_tab.Runtime.evaluate(expression="document.documentElement.outerHTML")
+            html_content = result.get('result', {}).get('value', '')
+            
+            # HTML 파일 저장
+            html_filename = os.path.join(tmp_dir, f"{current_date}_{url_filename}_source.html")
+            with open(html_filename, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            
+            logger.info(f"HTML saved to: {html_filename}")
+            
+            # 필요한 리소스 다운로드 (JS, CSS)
+            resource_files = []
+            
+            for resource in resources:
+                # JS와 CSS 파일만 다운로드
+                resource_type = resource.get('type', '').lower()
+                resource_url = resource.get('url', '')
+                
+                if (resource_type in ['script', 'stylesheet'] or 
+                    resource_url.endswith('.js') or resource_url.endswith('.css')):
+                    try:
+                        # 상대 URL을 절대 URL로 변환
+                        if not resource_url.startswith(('http://', 'https://')):
+                            resource_url = urljoin(url, resource_url)
+                        
+                        # 파일명 추출
+                        parsed_url = urlparse(resource_url)
+                        filename = os.path.basename(parsed_url.path)
+                        if not filename:
+                            # 파일 이름이 없는 경우 URL 해시 사용
+                            filename = f"resource_{hash(resource_url) % 10000}"
+                        
+                        if resource_url.endswith('.js'):
+                            filename = f"{filename}.js" if not filename.endswith('.js') else filename
+                        elif resource_url.endswith('.css'):
+                            filename = f"{filename}.css" if not filename.endswith('.css') else filename
+                        
+                        # 리소스 다운로드
+                        logger.info(f"Downloading resource: {resource_url}")
+                        response = requests.get(resource_url, timeout=10)
+                        
+                        if response.status_code == 200:
+                            file_path = os.path.join(tmp_dir, filename)
+                            with open(file_path, 'wb') as f:
+                                f.write(response.content)
+                            
+                            resource['downloaded'] = True
+                            resource['local_path'] = file_path
+                            resource_files.append({
+                                'url': resource_url,
+                                'local_path': file_path,
+                                'type': 'js' if resource_url.endswith('.js') else 'css',
+                                'filename': filename,
+                                'size': len(response.content)
+                            })
+                            
+                            logger.info(f"Resource saved to: {file_path}")
+                    except Exception as e:
+                        logger.error(f"Error downloading resource {resource_url}: {e}")
+            
+            # 4. 분석 세션 시작 - 반복 대화를 통한 크롤링 방법 분석
+            logger.info("4. Starting interactive analysis session with ChatGPT")
+            
+            # 먼저 HTML 파일을 ChatGPT로 업로드
+            logger.info(f"Uploading HTML file: {html_filename}")
+            self.simulate_paste_local_file(html_filename, self.tab)
+            time.sleep(1)  # 업로드 완료 기다리기
+            
+            uploaded_resources = []
+            for i, resource in enumerate(sorted_resources[:9]):  # 최대 9개 리소스
+                try:
+                    resource_path = resource['local_path']
+                    logger.info(f"Uploading resource {i+1}/9: {resource['filename']}")
+                    self.simulate_paste_local_file(resource_path, self.tab)
+                    uploaded_resources.append(resource)
+                    time.sleep(1)  # 업로드 사이에 약간의 지연 시간
+                except Exception as e:
+                    logger.error(f"Error uploading resource {resource['filename']}: {e}")
+            
+            # 반복 분석 세션 초기화
+            max_iterations = 10  # 최대 반복 횟수
+            iteration = 0
+            analysis_complete = False
+            final_result = {}
+            
+            # 초기 프롬프트 작성
+            initial_prompt = f"""
+웹 페이지 크롤링 분석 요청:
+목적: {purpose}
+
+방금 업로드한 파일들:
+1. HTML 소스 파일: {os.path.basename(html_filename)}
+"""
+
+            # 업로드된 리소스 파일 목록 추가
+            for i, resource in enumerate(uploaded_resources):
+                initial_prompt += f"{i+2}. {resource['type'].upper()} 파일: {resource['filename']} (URL: {resource['url']})\n"
+
+            initial_prompt += f"""
+추가로 다운로드된 파일 수: {len(resource_files) - len(uploaded_resources)}
+
+다음 단계에 따라 크롤링 방법을 분석해주세요:
+1. 이 웹페이지의 구조를 분석하고 주요 요소들을 식별해주세요.
+2. 목적({purpose})에 맞는 데이터를 추출하기 위한 최적의 방법을 제안해주세요.
+3. 필요한 셀렉터(CSS/XPath)와 크롤링 로직을 Python 코드로 제공해주세요.
+4. JavaScript가 필요한 부분이 있다면 어떻게 처리해야 하는지 설명해주세요.
+5. 페이지 내 동적 콘텐츠 로딩 처리 방법도 포함해주세요.
+6. pythnonpath 는 {os.path.abspath(self.pythonpath)} 입니다.
+
+응답 형식(필수):
+```json
+{{
+  "page_structure": "웹페이지 구조 설명",
+  "target_elements": ["목적에 맞는 데이터 요소들"],
+  "selectors": {{
+    "element_name1": "selector1",
+    "element_name2": "selector2"
+  }},
+  "crawling_method": "크롤링 방법 설명",
+  "python_code": "크롤링을 위한 파이썬 코드",
+  "javascript_handling": "필요한 경우 JavaScript 처리 방법",
+  "dynamic_content": "동적 콘텐츠 처리 방법",
+  "analysis_complete": true/false,
+  "additional_instructions": "분석을 계속하기 위해 필요한 추가 정보나 지시사항"
+}}
+```
+
+JSON 응답의 "analysis_complete" 필드가 true인 경우 분석이 완료된 것으로 간주합니다.
+분석이 불완전하거나 추가 정보가 필요한 경우 "analysis_complete": false로 설정하고 "additional_instructions" 필드에 필요한 내용을 명시해주세요.
+"""
+            
+            # 반복 분석 세션 시작
+            logger.info("Starting interactive analysis loop")
+            current_prompt = initial_prompt
+            
+            while iteration < max_iterations and not analysis_complete:
+                iteration += 1
+                logger.info(f"Analysis iteration {iteration}/{max_iterations}")
+                
+                # ChatGPT에 프롬프트 전송
+                logger.info(f"Sending prompt for iteration {iteration}")
+                self.send_query(browser, self.tab, current_prompt)
+                
+                # 응답 대기
+                logger.info("Waiting for ChatGPT response")
+                if not self.wait_for_response_complete(self.tab, timeout=300):
+                    logger.warning("ChatGPT response timeout")
+                    break
+                
+                # ChatGPT 응답 추출
+                logger.info("Extracting response from ChatGPT")
+                response_text = self.extract_chatgpt_response(self.tab)
+                logger.info(f"Received response of length: {len(response_text)}")
+                
+                # 응답에서 JSON 추출
+                json_data = self.extract_json_from_response(response_text)
+                
+                # JSON 데이터 처리
+                if json_data:
+                    # 분석 완료 여부 확인
+                    analysis_complete = json_data.get('analysis_complete', False)
+                    if analysis_complete:
+                        logger.info("Analysis marked as complete in response")
+                        final_result = json_data
+                        break
+                    else:
+                        # 추가 지시사항이 있으면 다음 프롬프트 구성
+                        additional_instructions = json_data.get('additional_instructions', '')
+                        if not additional_instructions:
+                            additional_instructions = "이전 분석을 개선해주세요. JSON 형식을 정확히 지켜주세요."
+                        
+                        logger.info(f"Analysis not complete, additional instructions: {additional_instructions[:100]}...")
+                        
+                        # 중간 결과 저장
+                        intermediate_result_path = os.path.join(tmp_dir, f"{current_date}_{url_filename}_iteration_{iteration}.json")
+                        with open(intermediate_result_path, 'w', encoding='utf-8') as f:
+                            json.dump(json_data, f, ensure_ascii=False, indent=2)
+                        logger.info(f"Intermediate analysis saved: {intermediate_result_path}")
+                        
+                        # 다음 프롬프트 구성
+                        current_prompt = f"""
+이전 분석에 대한 피드백:
+
+{additional_instructions}
+
+이전 분석과 피드백을 기반으로 크롤링 방법을 다시 분석해주세요. 웹페이지 구조와 목적({purpose})에 맞는 최적의 크롤링 방법을 제시해주세요.
+
+반드시 다음 형식의 JSON으로 응답해주세요:
+```json
+{{
+  "page_structure": "웹페이지 구조 설명",
+  "target_elements": ["목적에 맞는 데이터 요소들"],
+  "selectors": {{
+    "element_name1": "selector1",
+    "element_name2": "selector2"
+  }},
+  "crawling_method": "크롤링 방법 설명",
+  "python_code": "크롤링을 위한 파이썬 코드",
+  "javascript_handling": "필요한 경우 JavaScript 처리 방법",
+  "dynamic_content": "동적 콘텐츠 처리 방법",
+  "analysis_complete": true,
+  "additional_instructions": "분석을 계속하기 위해 필요한 추가 정보나 지시사항"
+}}
+```
+
+JSON 형식을 정확히 지켜주세요. 특히 중괄호, 콤마, 따옴표 등의 구문 오류가 없어야 합니다.
+"analysis_complete" 필드가 true면 분석이 완료된 것으로 간주합니다.
+"""
+                else:
+                    logger.warning("No valid JSON found in response")
+                    # JSON 형식이 없는 경우 형식 요청 프롬프트
+                    current_prompt = f"""
+응답에서 유효한 JSON 형식을 찾을 수 없습니다. 
+
+반드시 다음 양식의 JSON 객체를 ```json 코드 블록 안에 포함하여 응답해주세요:
+
+```json
+{{
+  "page_structure": "웹페이지 구조 설명",
+  "target_elements": ["목적에 맞는 데이터 요소들"],
+  "selectors": {{
+    "element_name1": "selector1",
+    "element_name2": "selector2"
+  }},
+  "crawling_method": "크롤링 방법 설명",
+  "python_code": "크롤링을 위한 파이썬 코드",
+  "javascript_handling": "필요한 경우 JavaScript 처리 방법",
+  "dynamic_content": "동적 콘텐츠 처리 방법",
+  "analysis_complete": true,
+  "additional_instructions": "분석을 계속하기 위해 필요한 추가 정보나 지시사항"
+}}
+```
+
+JSON 형식이 정확히 지켜져야 합니다:
+1. 코드 블록은 ```json으로 시작하고 ```으로 끝나야 합니다
+2. 모든 속성 이름은 큰따옴표(")로 감싸야 합니다
+3. 문자열 값은 큰따옴표(")로 감싸야 합니다
+4. 숫자, boolean(true/false), null은 따옴표 없이 그대로 적어야 합니다
+5. 배열은 대괄호([])로, 객체는 중괄호({})로 표현합니다
+6. 마지막 속성을 제외한 모든 속성 뒤에는 콤마(,)가 있어야 합니다
+
+코드 블록 이외의 부분에서는 자유롭게 설명을 추가해도 됩니다.
+"""
+                    if analysis_complete:
+                        logger.info("Analysis marked as complete in response")
+                        final_result = json_data
+                        break
+                    else:
+                        # 추가 지시사항이 있으면 다음 프롬프트 구성
+                        additional_instructions = json_data.get('additional_instructions', '')
+                        if not additional_instructions:
+                            additional_instructions = "이전 분석을 개선해주세요. JSON 형식을 정확히 지켜주세요."
+                        
+                        logger.info(f"Analysis not complete, additional instructions: {additional_instructions[:100]}...")
+                        
+                        # 중간 결과 저장
+                        intermediate_result_path = os.path.join(tmp_dir, f"{current_date}_{url_filename}_iteration_{iteration}.json")
+                        with open(intermediate_result_path, 'w', encoding='utf-8') as f:
+                            json.dump(json_data, f, ensure_ascii=False, indent=2)
+                        logger.info(f"Intermediate analysis saved to: {intermediate_result_path}")
+                        
+                        # 다음 프롬프트 구성
+                        current_prompt = f"""
+이전 분석에 대한 피드백:
+
+{additional_instructions}
+
+이전 분석과 피드백을 기반으로 크롤링 방법을 다시 분석해주세요. 웹페이지 구조와 목적({purpose})에 맞는 최적의 크롤링 방법을 제시해주세요.
+
+반드시 다음 형식의 JSON으로 응답해주세요:
+```json
+{{
+  "page_structure": "웹페이지 구조 설명",
+  "target_elements": ["목적에 맞는 데이터 요소들"],
+  "selectors": {{
+    "element_name1": "selector1",
+    "element_name2": "selector2"
+  }},
+  "crawling_method": "크롤링 방법 설명",
+  "python_code": "크롤링을 위한 파이썬 코드",
+  "javascript_handling": "필요한 경우 JavaScript 처리 방법",
+  "dynamic_content": "동적 콘텐츠 처리 방법",
+  "analysis_complete": true,
+  "additional_instructions": "분석을 계속하기 위해 필요한 추가 정보나 지시사항"
+}}
+```
+
+JSON 형식을 정확히 지켜주세요. 특히 중괄호, 콤마, 따옴표 등의 구문 오류가 없어야 합니다.
+"analysis_complete" 필드가 true면 분석이 완료된 것으로 간주합니다.
+"""
+                else:
+                    logger.warning("No valid JSON found in response")
+                    # JSON 형식이 없는 경우 형식 요청 프롬프트
+                    current_prompt = f"""
+응답에서 유효한 JSON 형식을 찾을 수 없습니다. 
+
+반드시 다음 양식의 JSON 객체를 ```json 코드 블록 안에 포함하여 응답해주세요:
+
+```json
+{{
+  "page_structure": "웹페이지 구조 설명",
+  "target_elements": ["목적에 맞는 데이터 요소들"],
+  "selectors": {{
+    "element_name1": "selector1",
+    "element_name2": "selector2"
+  }},
+  "crawling_method": "크롤링 방법 설명",
+  "python_code": "크롤링을 위한 파이썬 코드",
+  "javascript_handling": "필요한 경우 JavaScript 처리 방법",
+  "dynamic_content": "동적 콘텐츠 처리 방법",
+  "analysis_complete": true,
+  "additional_instructions": "분석을 계속하기 위해 필요한 추가 정보나 지시사항"
+}}
+```
+
+JSON 형식이 정확히 지켜져야 합니다:
+1. 코드 블록은 ```json으로 시작하고 ```으로 끝나야 합니다
+2. 모든 속성 이름은 큰따옴표(")로 감싸야 합니다
+3. 문자열 값은 큰따옴표(")로 감싸야 합니다
+4. 숫자, boolean(true/false), null은 따옴표 없이 그대로 적어야 합니다
+5. 배열은 대괄호([])로, 객체는 중괄호({})로 표현합니다
+6. 마지막 속성을 제외한 모든 속성 뒤에는 콤마(,)가 있어야 합니다
+
+코드 블록 이외의 부분에서는 자유롭게 설명을 추가해도 됩니다.
+"""
+            
+            # 반복 분석 완료 또는 최대 반복 횟수 도달
+            if analysis_complete:
+                logger.info(f"Analysis completed successfully after {iteration} iterations")
+            else:
+                logger.warning(f"Maximum iterations ({max_iterations}) reached without completing analysis")
+                if not final_result:
+                    # 마지막 응답에서 최선의 결과 추출 시도
+                    try:
+                        # json_matches가 없으므로 다른 방법으로 결과 추출
+                        if json_data:
+                            final_result = json_data
+                        else:
+                            final_result = {"error": "분석 완료되지 않음", "raw_response": response_text[:1000]}
+                    except Exception as e:
+                        logger.error(f"Error extracting final result: {e}")
+                        final_result = {"error": "분석 완료되지 않음", "raw_response": response_text[:1000]}
+            
+            # 최종 결과 저장
+            if not final_result:
+                final_result = {}
+            
+            final_result['downloaded_resources'] = resource_files
+            final_result['uploaded_resources'] = uploaded_resources
+            final_result['target_url'] = url
+            final_result['purpose'] = purpose
+            final_result['date'] = current_date
+            final_result['html_file'] = html_filename
+            final_result['iterations_count'] = iteration
+            
+            # 결과 저장
+            with open(result_path, 'w', encoding='utf-8') as f:
+                json.dump(final_result, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"Final crawling method saved to: {result_path}")
+            
+            # 안전하게 탭 닫기
+            try:
+                logger.info(f"Attempting to safely close tab with ID: {crawl_tab_id}")
+                self.safely_close_tab(browser, crawl_tab)
+                logger.info(f"Tab {crawl_tab_id} safely closed")
+            except Exception as e:
+                logger.error(f"Error during tab cleanup: {e}")
+                logger.error(traceback.format_exc())
+            
+    finally:
+        # 프로그램 종료 전 안전하게 모든 탭 닫기
+        try:
+            client.safely_close_all_tabs()
+        except Exception as e:
+            logger.error(f"Error during final tab cleanup: {e}")
+        logger.info("Program terminated")
+    def normalize_json_string(self, json_str):
+        """
+        JSON 문자열을 정규화하여 파싱 성공률을 높입니다.
+        """
+        try:
+            # 1. 기본 공백 제거
+            normalized = json_str.strip()
+            
+            # 2. 불필요한 이스케이프 제거
+            normalized = normalized.replace('\\"', '"').replace('\\\\', '\\')
+            
+            # 3. 콤마 문제 해결 (마지막 속성 뒤에 콤마가 있는 경우)
+            normalized = re.sub(r',\s*}', '}', normalized)
+            normalized = re.sub(r',\s*]', ']', normalized)
+            
+            # 4. 따옴표 문제 해결 (누락된 따옴표 추가)
+            normalized = re.sub(r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', normalized)
+            
+            # 5. 불완전한 JSON 끝 부분 처리
+            if not normalized.endswith('}'):
+                normalized = normalized + '}'
+            
+            # 6. 문자열 내 줄바꿈 제거 (JSON 파싱 오류 방지)
+            normalized = re.sub(r'(?<!"): "([^"]*?)[\n\r]+(.*?)"', r': "\1 \2"', normalized)
+            
+            return normalized
+            
+        except Exception as e:
+            logger.warning(f"Error normalizing JSON: {e}")
+            return json_str
+    
+    def extract_json_from_response(self, response_text):
+        """
+        응답 텍스트에서 JSON 데이터를 추출하고 파싱합니다.
+        """
+        logger.info("Looking for JSON data in response...")
+        json_data = None
+        
+        # 1. 코드 블록 내 JSON 찾기
+        json_blocks = re.findall(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', response_text, re.MULTILINE)
+        if json_blocks:
+            logger.info(f"Found {len(json_blocks)} JSON blocks in code blocks")
+            
+            # 코드 블록에서 찾은 JSON 파싱 시도
+            for json_str in json_blocks:
+                try:
+                    # 정규화 및 파싱
+                    clean_json = self.normalize_json_string(json_str)
+                    parsed = json.loads(clean_json)
+                    
+                    # 최소 필수 필드 확인
+                    if "page_structure" in parsed and "selectors" in parsed:
+                        logger.info("Found valid JSON in code block")
+                        json_data = parsed
+                        break
+                except Exception as e:
+                    logger.warning(f"Failed to parse JSON from code block: {str(e)[:100]}")
+        
+        # 2. 직접 텍스트에서 JSON 객체 찾기
+        if not json_data:
+            try:
+                # 중괄호 매칭을 통한 JSON 객체 찾기
+                potential_jsons = []
+                
+                # 텍스트에서 JSON 객체 후보 추출
+                start_indices = [m.start() for m in re.finditer(r'{\s*"[^"]+"\s*:', response_text)]
+                for start_idx in start_indices:
+                    depth = 0
+                    for i in range(start_idx, len(response_text)):
+                        if response_text[i] == '{':
+                            depth += 1
+                        elif response_text[i] == '}':
+                            depth -= 1
+                            if depth == 0:
+                                json_candidate = response_text[start_idx:i+1]
+                                if len(json_candidate) > 100:  # 최소 크기 필터
+                                    potential_jsons.append(json_candidate)
+                                break
+                
+                # 찾은 JSON 객체 후보들 처리
+                if potential_jsons:
+                    logger.info(f"Found {len(potential_jsons)} direct JSON objects")
+                    
+                    # 크기순으로 정렬 (가장 큰 객체부터)
+                    potential_jsons.sort(key=len, reverse=True)
+                    
+                    for json_str in potential_jsons:
+                        try:
+                            # 정규화 및 파싱
+                            clean_json = self.normalize_json_string(json_str)
+                            parsed = json.loads(clean_json)
+                            
+                            # 필수 필드 확인
+                            if "page_structure" in parsed:
+                                logger.info("Found valid JSON in text")
+                                json_data = parsed
+                                break
+                        except Exception as e:
+                            logger.warning(f"Failed to parse JSON object: {str(e)[:100]}")
+            except Exception as e:
+                logger.error(f"Error finding JSON in text: {e}")
+        
+        # 3. 부분 JSON 데이터 재구성 (마지막 시도)
+        if not json_data:
+            # 응답에서 크롤링 관련 정보 추출 시도
+            structure_match = re.search(r'page_structure["\s:]+([^"]+)"', response_text)
+            method_match = re.search(r'crawling_method["\s:]+([^"]+)"', response_text)
+            
+            if structure_match or method_match:
+                logger.info("Reconstructing partial JSON")
+                json_data = {
+                    "page_structure": structure_match.group(1) if structure_match else "Not provided",
+                    "crawling_method": method_match.group(1) if method_match else "Not provided",
+                    "selectors": {},
+                    "reconstructed": True,
+                    "analysis_complete": False,
+                    "additional_instructions": "JSON 포맷이 올바르지 않았습니다. 정확한 JSON 형식으로 응답해주세요."
+                }
+        
+        return json_data
+
+

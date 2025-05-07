@@ -55,12 +55,11 @@ class ChromeCDPClient:
         """
         웹소켓 디버깅을 위한 추가 로깅 설정
         """
-        # Fixing try-except structure
-        # Import pychrome tab
-        import pychrome.tab
-        from pychrome.tab import Tab
-        
         try:
+            # Import pychrome tab
+            import pychrome.tab
+            from pychrome.tab import Tab
+            
             # Check if Tab class has the expected behavior for websocket
             # Instead of directly accessing _recv attribute which may not exist in newer versions
             if hasattr(Tab, 'recv'):
