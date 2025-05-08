@@ -2,11 +2,6 @@ from agents.chatgpt.chrome_cdp_client import ChromeCDPClient
 import traceback
 import sys
 
-
-
-
-
-
 if __name__ == "__main__":
     import glob
     import os
@@ -18,15 +13,10 @@ if __name__ == "__main__":
         ccc = ChromeCDPClient()
         print("ChromeCDPClient created successfully")
         print("Starting analysis...")
-        ccc.analisys_crawl_page(ccc.browser, "https://translate.google.co.kr/?sl=en&tl=ko&op=translate", "구글번역이 어떻게 음성을 실시간으로 처리하는지 크롤링하세요" , "https://translate.google.co.kr/?sl=en&tl=ko&op=translate")
+        ccc.analisys_crawl_page(ccc.browser, "https://translate.google.co.kr/?sl=en&tl=ko&op=translate", "Please crawl how Google Translate processes voice in real-time", "https://translate.google.co.kr/?sl=en&tl=ko&op=translate")
         print("Analysis complete")
     except Exception as e:
         print(f"Error: {e}")
         print(traceback.format_exc())
     
     input("Press Enter to continue...")
-
-
-
-
-
