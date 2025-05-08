@@ -13,7 +13,7 @@ if __name__ == "__main__":
         ccc = ChromeCDPClient()
         print("ChromeCDPClient created successfully")
         print("Starting analysis...")
-        ccc.analisys_crawl_page(ccc.browser, "https://www.google.com", "구글에 접속한 뒤에 구글의 소소를 참조하여 구글맵의 웹소스를 확인하고, 구글맵을이용하여,지명,혹은,건물명의gps주소추출")
+        ccc.analisys_crawl_page(ccc.browser, "https://www.youtube.com/watch?v=o7wf2b2CRc4", "유튜브 영상의 요약을 크롤링하세요" , "https://www.youtube.com/watch?v=CfC0rnfGKJg")
         print("Analysis complete")
     except Exception as e:
         print(f"Error: {e}")

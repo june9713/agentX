@@ -1,0 +1,35 @@
+{
+  "page_structure": "설명\",\n  \"target_elements\": [\"목적에 맞는 데이터 요소들\"],\n  \"selectors\": {\n    \"element_name1\": \"selector1\",\n    \"element_name2\": \"selector2\"\n  },\n  \"crawling_method\": \"크롤링 방법 설명\",\n  \"python_code\": \"크롤링을 위한 파이썬 코드\",\n  \"javascript_handling\": \"필요한 경우 JavaScript 처리 방법\",\n  \"dynamic_content\": \"동적 콘텐츠 처리 방법\",\n  \"analysis_complete\": true,\n  \"additional_instructions\": \"\"\n}",
+  "target_elements": [],
+  "selectors": {},
+  "crawling_method": "설명\",\n  \"python_code\": \"크롤링을 위한 파이썬 코드\",\n  \"javascript_handling\": \"필요한 경우 JavaScript 처리 방법\",\n  \"dynamic_content\": \"동적 콘텐츠 처리 방법\",\n  \"analysis_complete\": true,\n  \"additional_instructions\": \"\"\n}",
+  "python_code": "",
+  "javascript_handling": "",
+  "dynamic_content": "처리 방법\",\n  \"analysis_complete\": true,\n  \"additional_instructions\": \"\"\n}",
+  "analysis_complete": "",
+  "additional_instructions": "",
+  "raw_response": "```whitespace-pre! json\n{\n  \"page_structure\": \"웹페이지 구조 설명\",\n  \"target_elements\": [\"목적에 맞는 데이터 요소들\"],\n  \"selectors\": {\n    \"element_name1\": \"selector1\",\n    \"element_name2\": \"selector2\"\n  },\n  \"crawling_method\": \"크롤링 방법 설명\",\n  \"python_code\": \"크롤링을 위한 파이썬 코드\",\n  \"javascript_handling\": \"필요한 경우 JavaScript 처리 방법\",\n  \"dynamic_content\": \"동적 콘텐츠 처리 방법\",\n  \"analysis_complete\": true,\n  \"additional_instructions\": \"\"\n}\n\n```\n\njson복사편집{\n  \"page_structure\": \"웹페이지 구조 설명\",\n  \"target_elements\": [\"목적에 맞는 데이터 요소들\"],\n  \"selectors\": {\n    \"element_name1\": \"selector1\",\n    \"element_name2\": \"selector2\"\n  },\n  \"crawling_method\": \"크롤링 방법 설명\",\n  \"python_code\": \"크롤링을 위한 파이썬 코드\",\n  \"javascript_handling\": \"필요한 경우 JavaScript 처리 방법\",\n  \"dynamic_content\": \"동적 콘텐츠 처리 방법\",\n  \"analysis_complete\": true,\n  \"additional_instructions\": \"\"\n}\n",
+  "downloaded_resources": [
+    {
+      "url": "https://www.google.com/js/bg/WoPaE2mq60DTK3OwQS1D3OIs-_mnZwcXVJ7IMupAjSI.js",
+      "local_path": "./tmp/crawl\\WoPaE2mq60DTK3OwQS1D3OIs-_mnZwcXVJ7IMupAjSI.js",
+      "type": "js",
+      "filename": "WoPaE2mq60DTK3OwQS1D3OIs-_mnZwcXVJ7IMupAjSI.js",
+      "size": 58655
+    }
+  ],
+  "uploaded_resources": [
+    {
+      "url": "https://www.google.com/js/bg/WoPaE2mq60DTK3OwQS1D3OIs-_mnZwcXVJ7IMupAjSI.js",
+      "local_path": "./tmp/crawl\\WoPaE2mq60DTK3OwQS1D3OIs-_mnZwcXVJ7IMupAjSI.js",
+      "type": "js",
+      "filename": "WoPaE2mq60DTK3OwQS1D3OIs-_mnZwcXVJ7IMupAjSI.js",
+      "size": 58655
+    }
+  ],
+  "target_url": "https://www.google.com",
+  "purpose": "구글에 접속한 뒤에 구글의 소소를 참조하여 구글맵의 웹소스를 확인하고, 구글맵을이용하여,지명,혹은,건물명의gps주소추출",
+  "date": "20250507",
+  "html_file": "./tmp/crawl\\20250507_https___www_google_com_source.html",
+  "iterations_count": 3
+}

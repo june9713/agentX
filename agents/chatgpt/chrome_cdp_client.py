@@ -228,7 +228,7 @@ class ChromeCDPClient:
             return False
 
         
-    def analisys_crawl_page(self, browser, url, purpose):
+    def analisys_crawl_page(self, browser, url, purpose, test_string):
         """
         크롤링 페이지를 분석하고 필요한 정보를 추출합니다.
         tab 을 새로 생성하고 url 로 접속하여 html 소스를 확인하고
@@ -501,13 +501,20 @@ JSON 응답의 "analysis_complete" 필드가 true인 경우 분석이 완료된 
                 # ChatGPT 응답 추출
                 logger.info("Extracting response from ChatGPT")
                 response_text = self.extract_chatgpt_response(self.tab)
-                logger.info(f"Received response of length: {len(response_text)}")
+                logger.info(f"Received response: {response_text}")
                 
                 # 응답에서 JSON 부분 추출
-                json_pattern = r'```json\s*(\{[\s\S]*?\})\s*```'
+                json_pattern = r'''(\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\})'''
                 json_matches = re.findall(json_pattern, response_text, re.MULTILINE)
+                logger.info(f"JSON matches: {json_matches}")
+                # 포맷 오류 카운터 추가 (연속으로 JSON 형식을 찾지 못한 횟수)
+                if not hasattr(self, '_json_format_error_count'):
+                    self._json_format_error_count = 0
                 
                 if json_matches:
+                    # JSON 응답을 찾았으므로 카운터 초기화
+                    self._json_format_error_count = 0
+                    
                     try:
                         # JSON 파싱
                         logger.info(f"Found JSON match of length: {len(json_matches[0])}")
@@ -519,6 +526,129 @@ JSON 응답의 "analysis_complete" 필드가 true인 경우 분석이 완료된 
                         if analysis_complete:
                             logger.info("Analysis marked as complete in response")
                             final_result = result_data
+                            
+                            # 크롤링 테스트 실행
+                            logger.info(f"Running test crawl to verify functionality with test string: {test_string}")
+                            test_result = self.test_crawl_functionality(result_data, url, test_string)
+                            
+                            # 테스트 결과를 최종 결과에 추가
+                            final_result['test_crawl_result'] = test_result
+                            
+                            # 테스트 결과에 따른 추가 메시지 구성
+                            if test_result['success']:
+                                logger.info("Test crawl successful!")
+                                if test_string and test_result['test_string_found']:
+                                    logger.info(f"The test string '{test_string}' was found in the crawled data")
+                                    final_result['test_string_validation'] = "Test string found successfully"
+                                elif test_string:
+                                    logger.warning(f"The test string '{test_string}' was NOT found in the crawled data")
+                                    final_result['test_string_validation'] = "Test string not found in crawled data"
+                            else:
+                                # 테스트 실패 원인 상세 분석
+                                error_msg = test_result.get('error', 'Unknown error')
+                                error_details = []
+                                
+                                # 오류 유형 분석
+                                if "ModuleNotFoundError" in error_msg or "ImportError" in error_msg:
+                                    # 패키지 설치 관련 오류
+                                    error_details.append("필요한 패키지가 설치되지 않았습니다.")
+                                    
+                                    # 누락된 패키지 식별
+                                    missing_package_match = re.search(r"ModuleNotFoundError: No module named '([^']+)'", error_msg)
+                                    if missing_package_match:
+                                        package_name = missing_package_match.group(1)
+                                        error_details.append(f"누락된 패키지: {package_name}")
+                                        error_details.append(f"설치 방법: pip install {package_name}")
+                                
+                                elif "ConnectionError" in error_msg or "ConnectionRefusedError" in error_msg:
+                                    # 연결 관련 오류
+                                    error_details.append("웹 사이트 연결에 실패했습니다.")
+                                    error_details.append("가능한 원인: 인터넷 연결 문제, 서버 접근 제한, URL 오류")
+                                
+                                elif "HTTPError" in error_msg or "status code" in error_msg.lower():
+                                    # HTTP 오류
+                                    status_code_match = re.search(r"(\d{3})", error_msg)
+                                    if status_code_match:
+                                        status_code = status_code_match.group(1)
+                                        error_details.append(f"HTTP 오류 코드: {status_code}")
+                                        
+                                        if status_code.startswith('4'):
+                                            error_details.append("클라이언트 오류: 요청이 올바르지 않거나 접근 권한이 없습니다.")
+                                        elif status_code.startswith('5'):
+                                            error_details.append("서버 오류: 웹사이트 서버에 문제가 있습니다.")
+                                    else:
+                                        error_details.append("HTTP 요청 오류가 발생했습니다.")
+                                
+                                elif "IndexError" in error_msg or "KeyError" in error_msg:
+                                    # 데이터 접근 오류
+                                    error_details.append("웹 페이지 구조에서 필요한 데이터를 찾지 못했습니다.")
+                                    error_details.append("가능한 원인: 웹 페이지 구조 변경, 선택자(selector) 오류")
+                                
+                                elif "SyntaxError" in error_msg:
+                                    # 문법 오류
+                                    error_details.append("생성된 크롤링 코드에 문법 오류가 있습니다.")
+                                    syntax_line_match = re.search(r"line (\d+)", error_msg)
+                                    if syntax_line_match:
+                                        line_num = syntax_line_match.group(1)
+                                        error_details.append(f"오류 발생 위치: {line_num}번 줄")
+                                
+                                elif "AttributeError" in error_msg:
+                                    # 속성 접근 오류
+                                    error_details.append("존재하지 않는 객체 속성에 접근을 시도했습니다.")
+                                    attr_match = re.search(r"has no attribute '([^']+)'", error_msg)
+                                    if attr_match:
+                                        attr_name = attr_match.group(1)
+                                        error_details.append(f"존재하지 않는 속성: {attr_name}")
+                                
+                                elif "TimeoutError" in error_msg or "timeout" in error_msg.lower():
+                                    # 시간 초과 오류
+                                    error_details.append("실행 시간이 초과되었습니다.")
+                                    error_details.append("가능한 원인: 웹사이트 응답 지연, 복잡한 처리로 인한 실행 지연")
+                                
+                                elif "JSONDecodeError" in error_msg:
+                                    # JSON 파싱 오류
+                                    error_details.append("응답을 JSON으로 파싱하는 데 실패했습니다.")
+                                    error_details.append("가능한 원인: 웹사이트가 예상된 JSON 형식으로 응답하지 않음")
+                                
+                                # 기본 오류 메시지 추가
+                                error_summary = f"테스트 실패: {error_msg}"
+                                if error_details:
+                                    error_summary += "\n\n원인 분석:\n- " + "\n- ".join(error_details)
+                                
+                                # stderr 내용이 있으면 추가
+                                stderr_content = test_result.get('stderr', '')
+                                if stderr_content and len(stderr_content.strip()) > 0:
+                                    error_summary += f"\n\n오류 로그:\n{stderr_content[:500]}"
+                                
+                                logger.warning(f"Test crawl failed: {error_msg}")
+                                final_result['test_string_validation'] = error_summary
+                                final_result['test_error_details'] = error_details
+                                
+                                # 수정 제안 추가
+                                fix_suggestions = []
+                                if "ModuleNotFoundError" in error_msg:
+                                    missing_pkg = re.search(r"No module named '([^']+)'", error_msg)
+                                    if missing_pkg:
+                                        pkg_name = missing_pkg.group(1)
+                                        fix_suggestions.append(f"패키지 설치: pip install {pkg_name}")
+                                
+                                if fix_suggestions:
+                                    final_result['fix_suggestions'] = fix_suggestions
+                            
+                            # 데이터 샘플 추가
+                            if test_result.get('data_sample'):
+                                if isinstance(test_result['data_sample'], list):
+                                    sample_size = min(3, len(test_result['data_sample']))
+                                    final_result['data_preview'] = test_result['data_sample'][:sample_size]
+                                elif isinstance(test_result['data_sample'], dict):
+                                    final_result['data_preview'] = test_result['data_sample']
+                                else:
+                                    sample_data = str(test_result['data_sample'])
+                                    if len(sample_data) > 500:
+                                        final_result['data_preview'] = sample_data[:500] + "..."
+                                    else:
+                                        final_result['data_preview'] = sample_data
+                            
                             break
                         else:
                             # 추가 지시사항이 있으면 다음 프롬프트 구성
@@ -563,6 +693,7 @@ JSON 응답의 "analysis_complete" 필드가 true인 경우 분석이 완료된 
                     except json.JSONDecodeError as e:
                         logger.error(f"Error parsing JSON from response: {e}")
                         # 오류 발생 시 사용자에게 오류 안내 프롬프트
+                        self._json_format_error_count += 1
                         current_prompt = f"""
 이전 응답에서 JSON 형식을 정확히 파싱할 수 없었습니다. 다음 형식으로 정확하게 응답해주세요:
 
@@ -586,10 +717,68 @@ JSON 응답의 "analysis_complete" 필드가 true인 경우 분석이 완료된 
 JSON 형식에 오류가 없도록 주의하세요. 특히 중괄호, 따옴표, 콤마 등의 구문을 정확히 사용해야 합니다.
 """
                 else:
-                    logger.warning("No JSON format found in response")
                     # JSON 형식이 없는 경우 형식 요청 프롬프트
-                    current_prompt = f"""
-응답에서 JSON 형식을 찾을 수 없습니다. 반드시 다음 형식의 JSON으로 응답해주세요:
+                    logger.warning("No JSON format found in response")
+                    self._json_format_error_count += 1
+                    
+                    # 연속으로 3회 이상 JSON 형식을 찾지 못한 경우, 분석을 강제 종료하고 수동으로 결과 생성
+                    if self._json_format_error_count >= 3:
+                        logger.warning(f"Failed to get JSON format after {self._json_format_error_count} consecutive attempts, forcing analysis completion")
+                        
+                        # 원본 응답에서 유용한 정보 추출
+                        logger.info("Attempting to extract useful information from unstructured response")
+                        extracted_data = self.extract_useful_content_from_text(response_text)
+                        
+                        if extracted_data["python_code"] or extracted_data["page_structure"]:
+                            logger.info("Successfully extracted useful content from unstructured text")
+                            final_result = extracted_data
+                        else:
+                            # 추출에 실패한 경우 기본 결과 생성
+                            logger.warning("Failed to extract useful content, using default result")
+                            text_content = response_text.strip()
+                            final_result = {
+                                "page_structure": "웹페이지 구조 자동 추출 실패",
+                                "target_elements": ["자동 추출 실패"],
+                                "selectors": {},
+                                "crawling_method": "원본 응답에서 형식화된 JSON을 찾지 못했습니다.",
+                                "python_code": "# 원본 응답에서 파이썬 코드를 추출하지 못했습니다",
+                                "javascript_handling": "없음",
+                                "dynamic_content": "없음",
+                                "analysis_complete": True,
+                                "raw_response": text_content[:1000]  # 원본 응답 일부 저장
+                            }
+                        break
+                    
+                    # 최종 시도: 이전 프롬프트가 성공하지 않았다면, 극단적으로 단순화된 프롬프트 사용
+                    if self._json_format_error_count == 2:
+                        current_prompt = """
+중요: JSON 형식으로만 응답하세요. 다른 텍스트 없이 오직 아래 형식의 JSON만 반환하세요:
+
+```json
+{
+  "page_structure": "웹페이지 구조 설명",
+  "target_elements": ["목적에 맞는 데이터 요소들"],
+  "selectors": {
+    "element_name1": "selector1",
+    "element_name2": "selector2"
+  },
+  "crawling_method": "크롤링 방법 설명",
+  "python_code": "크롤링을 위한 파이썬 코드",
+  "javascript_handling": "필요한 경우 JavaScript 처리 방법",
+  "dynamic_content": "동적 콘텐츠 처리 방법",
+  "analysis_complete": true,
+  "additional_instructions": ""
+}
+```
+
+JSON 형식만 응답하세요. 다른 텍스트는 모두 제외하세요.
+"""
+                    else:
+                        # 더 명확한 지시사항으로 JSON 형식 응답 요청
+                        current_prompt = f"""
+중요: 응답에서 JSON 형식을 찾을 수 없습니다. 
+
+다음 JSON 형식으로만 응답해주세요. 설명이나 추가 텍스트 없이 정확히 다음 형식의 JSON만 응답하세요:
 
 ```json
 {{
@@ -603,12 +792,13 @@ JSON 형식에 오류가 없도록 주의하세요. 특히 중괄호, 따옴표,
   "python_code": "크롤링을 위한 파이썬 코드",
   "javascript_handling": "필요한 경우 JavaScript 처리 방법",
   "dynamic_content": "동적 콘텐츠 처리 방법",
-  "analysis_complete": true/false,
+  "analysis_complete": false,
   "additional_instructions": "분석을 계속하기 위해 필요한 추가 정보나 지시사항"
 }}
 ```
 
-JSON 코드 블록을 백틱(```) 안에 포함시켜주세요.
+반드시 위 JSON 형식으로만 응답해주세요. JSON 코드 블록을 백틱(```) 안에 정확히 포함시켜야 합니다.
+어떤 설명이나 추가 텍스트를 포함하지 마세요. JSON 만 응답하세요.
 """
             
             # 반복 분석 완료 또는 최대 반복 횟수 도달
@@ -704,7 +894,8 @@ JSON 코드 블록을 백틱(```) 안에 포함시켜주세요.
                         '[data-message-author-role="assistant"] .markdown',
                         '.agent-turn .markdown',
                         'article .prose',
-                        '.text-message'
+                        '.text-message',
+                        '[data-message-author-role="assistant"]'
                     ];
                     
                     let lastMessage = null;
@@ -718,23 +909,24 @@ JSON 코드 블록을 백틱(```) 안에 포함시켜주세요.
                     
                     if (!lastMessage) return '응답 메시지를 찾을 수 없음';
                     
-                    // JSON 형식의 응답 추출 시도
+                    // 응답에서 코드 블록과 텍스트 모두 추출
+                    let fullContent = '';
+                    
+                    // 코드 블록 처리
                     const codeBlocks = lastMessage.querySelectorAll('pre code');
                     if (codeBlocks && codeBlocks.length > 0) {
-                        // 모든 코드 블록 내용 수집
-                        let codeContent = '';
                         for (let i = 0; i < codeBlocks.length; i++) {
-                            codeContent += '```' + (codeBlocks[i].className.includes('language-') ? 
-                                codeBlocks[i].className.replace('language-', '') : 'json') + '\\n';
-                            codeContent += codeBlocks[i].textContent + '\\n```\\n\\n';
+                            const codeType = codeBlocks[i].className.includes('language-') ? 
+                                codeBlocks[i].className.replace('language-', '') : '';
+                            fullContent += '```' + codeType + '\\n';
+                            fullContent += codeBlocks[i].textContent + '\\n```\\n\\n';
                         }
-                        
-                        // 코드 블록 내용과 함께 전체 텍스트 반환
-                        return lastMessage.textContent;
                     }
                     
-                    // 일반 텍스트 반환
-                    return lastMessage.textContent;
+                    // 전체 텍스트 추가
+                    fullContent += lastMessage.textContent;
+                    
+                    return fullContent;
                 } catch (error) {
                     console.error('응답 추출 오류:', error);
                     return '오류: ' + error.toString();
@@ -2144,6 +2336,424 @@ JSON 코드 블록을 백틱(```) 안에 포함시켜주세요.
         except Exception as e:
             logger.error(f"Error closing tab: {e}")
             return False
+
+    def extract_useful_content_from_text(self, text):
+        """
+        텍스트 응답에서 유용한 정보를 추출하여 구조화합니다.
+        JSON 형식이 아닌 일반 텍스트에서도 정보를 추출할 수 있도록 합니다.
+        """
+        result = {
+            "page_structure": "",
+            "target_elements": [],
+            "selectors": {},
+            "crawling_method": "",
+            "python_code": "",
+            "javascript_handling": "",
+            "dynamic_content": "",
+            "analysis_complete": True,
+            "additional_instructions": ""
+        }
+        
+        # 파이썬 코드 블록 추출
+        python_code_pattern = r'```python\s*([\s\S]*?)\s*```'
+        python_matches = re.findall(python_code_pattern, text, re.MULTILINE)
+        if python_matches:
+            result["python_code"] = python_matches[0].strip()
+        
+        # 코드 블록이 없는 경우 일반 코드 블록에서 찾기
+        if not result["python_code"]:
+            code_pattern = r'```\s*([\s\S]*?)\s*```'
+            code_matches = re.findall(code_pattern, text, re.MULTILINE)
+            if code_matches:
+                for code in code_matches:
+                    # 파이썬 코드로 보이는 내용 확인
+                    if "import" in code or "def " in code or "class " in code:
+                        result["python_code"] = code.strip()
+                        break
+        
+        # 섹션 기반 추출 (페이지 구조, 타겟 요소 등)
+        sections = {
+            "페이지 구조": "page_structure",
+            "웹페이지 구조": "page_structure", 
+            "대상 요소": "target_elements",
+            "타겟 요소": "target_elements",
+            "선택자": "selectors",
+            "크롤링 방법": "crawling_method",
+            "자바스크립트 처리": "javascript_handling",
+            "동적 콘텐츠": "dynamic_content"
+        }
+        
+        for section_name, result_key in sections.items():
+            pattern = rf"{section_name}[:\s]+(.*?)(?:\n\n|\n[A-Z가-힣])"
+            matches = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+            if matches:
+                content = matches.group(1).strip()
+                if result_key == "target_elements":
+                    # 리스트 항목 추출
+                    elements = re.findall(r'[-*]\s*(.*?)(?:\n|$)', content)
+                    if elements:
+                        result[result_key] = elements
+                    else:
+                        result[result_key] = [content]
+                elif result_key == "selectors":
+                    # 셀렉터 추출 (name: selector 형식)
+                    selector_pairs = re.findall(r'([^:]+):\s*([^\n]+)', content)
+                    if selector_pairs:
+                        result[result_key] = {k.strip(): v.strip() for k, v in selector_pairs}
+                else:
+                    result[result_key] = content
+        
+        # 결과가 비어있는 필드 확인
+        if not result["page_structure"]:
+            # 일반 텍스트에서 첫 몇 문단 추출
+            paragraphs = text.split('\n\n')
+            if paragraphs:
+                result["page_structure"] = paragraphs[0].strip()
+        
+        # 필수 정보가 모두 있는지 확인
+        has_minimum_info = result["python_code"] and result["page_structure"]
+        result["analysis_complete"] = has_minimum_info
+        
+        # 응답 일부 저장
+        result["raw_response"] = text[:1000]
+        
+        return result
+
+    def test_crawl_functionality(self, analysis_result, url, test_string):
+        """
+        분석 결과를 바탕으로 실제 크롤링을 테스트합니다.
+        
+        Args:
+            analysis_result: 크롤링 분석 결과 딕셔너리
+            url: 테스트할 URL
+            test_string: 크롤링 결과에서 찾을 테스트 문자열
+            
+        Returns:
+            테스트 결과를 담은 딕셔너리
+        """
+        try:
+            logger.info(f"Starting test crawl for URL: {url}")
+            logger.info(f"Test string to verify: {test_string}")
+            
+            # 테스트 결과 초기화
+            test_result = {
+                "success": False,
+                "time_taken": 0,
+                "error": None,
+                "data_sample": None,
+                "test_string_found": False,
+                "executed_code": None,
+                "output": None,
+                "stderr": None
+            }
+            
+            # 파이썬 코드 추출
+            python_code = analysis_result.get('python_code', '')
+            if not python_code:
+                test_result["error"] = "No Python code found in analysis results"
+                logger.error(test_result["error"])
+                return test_result
+            
+            # 파이썬 코드 준비 - 필요한 import 구문 추가
+            imports_added = []
+            
+            # 1. requests와 BeautifulSoup 임포트 확인 및 추가
+            if "import requests" not in python_code:
+                python_code = "import requests\n" + python_code
+                imports_added.append("requests")
+                
+            if "from bs4 import BeautifulSoup" not in python_code and "BeautifulSoup" in python_code:
+                python_code = "from bs4 import BeautifulSoup\n" + python_code
+                imports_added.append("BeautifulSoup")
+            
+            # 2. 필요한 경우 selenium 임포트 추가
+            if "selenium" in python_code:
+                if "from selenium import webdriver" not in python_code:
+                    python_code = "from selenium import webdriver\n" + python_code
+                    imports_added.append("selenium.webdriver")
+                if "from selenium.webdriver.common.by import By" not in python_code and "By." in python_code:
+                    python_code = "from selenium.webdriver.common.by import By\n" + python_code
+                    imports_added.append("selenium.webdriver.common.by")
+                if "from selenium.webdriver.chrome.options import Options" not in python_code and "Options" in python_code:
+                    python_code = "from selenium.webdriver.chrome.options import Options\n" + python_code
+                    imports_added.append("selenium.webdriver.chrome.options")
+                if "from selenium.webdriver.chrome.service import Service" not in python_code and "Service" in python_code:
+                    python_code = "from selenium.webdriver.chrome.service import Service\n" + python_code
+                    imports_added.append("selenium.webdriver.chrome.service")
+                if "from selenium.webdriver.support.ui import WebDriverWait" not in python_code and "WebDriverWait" in python_code:
+                    python_code = "from selenium.webdriver.support.ui import WebDriverWait\n" + python_code
+                    imports_added.append("selenium.webdriver.support.ui")
+                if "from selenium.webdriver.support import expected_conditions as EC" not in python_code and "expected_conditions" in python_code:
+                    python_code = "from selenium.webdriver.support import expected_conditions as EC\n" + python_code
+                    imports_added.append("selenium.webdriver.support.expected_conditions")
+            
+            # 3. 기타 필요한 라이브러리 추가
+            if ("time.sleep" in python_code or "time." in python_code) and "import time" not in python_code:
+                python_code = "import time\n" + python_code
+                imports_added.append("time")
+                
+            if "json.loads" in python_code and "import json" not in python_code:
+                python_code = "import json\n" + python_code
+                imports_added.append("json")
+                
+            if "re.search" in python_code and "import re" not in python_code:
+                python_code = "import re\n" + python_code
+                imports_added.append("re")
+                
+            if "os.path" in python_code and "import os" not in python_code:
+                python_code = "import os\n" + python_code
+                imports_added.append("os")
+                
+            logger.info(f"Added imports: {', '.join(imports_added)}")
+            
+            # URL 변수가 없으면 추가하거나 수정
+            if "url = " not in python_code:
+                python_code = f"url = '{url}'\n" + python_code
+                logger.info(f"Added URL variable: url = '{url}'")
+            else:
+                # 기존 URL 변수 재정의
+                url_pattern = r"url\s*=\s*['\"].*?['\"]"
+                new_url = f"url = '{url}'"
+                if re.search(url_pattern, python_code):
+                    python_code = re.sub(url_pattern, new_url, python_code)
+                    logger.info(f"Updated URL variable: {new_url}")
+            
+            # 결과 출력 및 저장 코드 추가
+            result_output_code = """
+# 크롤링 결과 저장 코드
+def save_crawl_result(result_data):
+    import json
+    import os
+    
+    # 결과를 문자열로 변환
+    if isinstance(result_data, (list, dict)):
+        try:
+            result_str = json.dumps(result_data, ensure_ascii=False, indent=2)
+        except:
+            result_str = str(result_data)
+    else:
+        result_str = str(result_data)
+    
+    # 결과 저장
+    with open('./tmp/crawl/crawl_result_data.txt', 'w', encoding='utf-8') as f:
+        f.write(result_str)
+    
+    # 성공 여부 반환
+    return True
+
+"""
+            
+            # 메인 함수가 있으면 메인 함수에 결과 저장 코드 추가
+            if "def main" in python_code:
+                # 메인 함수 내에서 결과를 저장하는 코드 추가
+                main_pattern = r"def\s+main\s*\([^)]*\)\s*:"
+                main_match = re.search(main_pattern, python_code)
+                
+                if main_match:
+                    # 메인 함수의 끝을 찾기
+                    main_start = main_match.start()
+                    main_code = python_code[main_start:]
+                    
+                    # 메인 함수 내에서 반환값 확인
+                    return_pattern = r"return\s+([^\n]+)"
+                    return_match = re.search(return_pattern, main_code)
+                    
+                    if return_match:
+                        # 반환문 전에 결과 저장 코드 추가
+                        return_var = return_match.group(1).strip()
+                        save_code = f"\n    # 크롤링 결과 저장\n    save_crawl_result({return_var})\n"
+                        
+                        # 반환문 앞에 코드 삽입
+                        return_pos = main_start + return_match.start()
+                        python_code = python_code[:return_pos] + save_code + python_code[return_pos:]
+                    else:
+                        # 반환문이 없는 경우 함수 끝에 저장 코드 추가
+                        # 함수 끝 찾기 - 들여쓰기가 변경되는 지점
+                        indent_pattern = r"\n(?=\S)"
+                        indent_matches = list(re.finditer(indent_pattern, main_code))
+                        
+                        if indent_matches and len(indent_matches) > 1:
+                            # 함수 끝 위치
+                            func_end = main_start + indent_matches[1].start()
+                            save_code = "\n    # 크롤링 결과 저장\n    save_crawl_result(locals())\n"
+                            python_code = python_code[:func_end] + save_code + python_code[func_end:]
+                        else:
+                            # 함수 끝을 찾을 수 없는 경우 전체 코드 끝에 추가
+                            python_code += "\n    # 크롤링 결과 저장\n    save_crawl_result(locals())\n"
+                
+                # 메인 함수 호출 코드 수정 - 크롤링 결과를 저장하는 부분 추가
+                if "if __name__ == '__main__':" in python_code:
+                    # 기존 __main__ 블록이 있는 경우 수정
+                    main_call_pattern = r"if\s+__name__\s*==\s*['\"]__main__['\"]\s*:(.*?)(?:\n\S|\Z)"
+                    main_call_match = re.search(main_call_pattern, python_code, re.DOTALL)
+                    
+                    if main_call_match:
+                        # __main__ 블록 전체 내용
+                        main_call_code = main_call_match.group(1)
+                        
+                        # main() 호출이 있는지 확인
+                        if "main()" in main_call_code:
+                            # 기존 호출을 결과 저장 코드로 대체
+                            new_main_call = main_call_code.replace("main()", "result = main()\nsave_crawl_result(result)")
+                            python_code = python_code.replace(main_call_code, new_main_call)
+                        else:
+                            # main() 호출이 없는 경우 추가
+                            new_main_call = main_call_code + "\n    result = main()\n    save_crawl_result(result)"
+                            python_code = python_code.replace(main_call_code, new_main_call)
+                else:
+                    # __main__ 블록이 없는 경우 추가
+                    python_code += "\n\nif __name__ == '__main__':\n    result = main()\n    save_crawl_result(result)"
+            else:
+                # 메인 함수가 없는 경우 - 크롤링 결과를 직접 저장하는 코드 추가
+                python_code += "\n\n# 크롤링 결과 저장\nsave_crawl_result(locals().get('result', locals()))"
+            
+            # 결과 저장 함수 추가
+            python_code = result_output_code + python_code
+            
+            # 테스트 코드 파일 저장
+            test_file_path = os.path.join("./tmp/crawl", "test_crawl.py")
+            with open(test_file_path, 'w', encoding='utf-8') as f:
+                f.write(python_code)
+            
+            # 테스트 코드 실행 시간 측정 시작
+            start_time = time.time()
+            
+            # 파이썬 실행 환경 설정
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            
+            # 크롤링 코드 실행
+            pythonpath = self.pythonpath if self.pythonpath else "python"
+            logger.info(f"Executing test crawl with Python: {pythonpath}")
+            
+            # 임시 디렉터리 생성 확인
+            if not os.path.exists("./tmp/crawl"):
+                os.makedirs("./tmp/crawl")
+            
+            # 크롤링 코드 실행
+            process = subprocess.Popen(
+                [pythonpath, test_file_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                env=env,
+                cwd="./tmp/crawl"  # 작업 디렉터리 설정
+            )
+            
+            # 타임아웃 설정 (기본 120초)
+            timeout = 120
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+                test_result["output"] = stdout
+                test_result["stderr"] = stderr
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate()
+                test_result["output"] = stdout
+                test_result["stderr"] = stderr
+                test_result["error"] = f"Crawl execution timed out after {timeout} seconds"
+                logger.error(test_result["error"])
+                test_result["executed_code"] = python_code
+                return test_result
+            
+            # 실행 시간 계산
+            execution_time = time.time() - start_time
+            test_result["time_taken"] = execution_time
+            
+            # 오류 확인
+            if process.returncode != 0:
+                test_result["error"] = f"Crawl execution failed with exit code {process.returncode}"
+                if stderr:
+                    test_result["error"] += f": {stderr}"
+                logger.error(test_result["error"])
+                test_result["executed_code"] = python_code
+                return test_result
+            
+            # 결과 파일 확인
+            result_file_path = os.path.join("./tmp/crawl", "crawl_result_data.txt")
+            crawl_result = None
+            
+            if os.path.exists(result_file_path):
+                logger.info(f"Found crawl result file: {result_file_path}")
+                try:
+                    with open(result_file_path, 'r', encoding='utf-8') as f:
+                        result_str = f.read()
+                        
+                    # JSON 형식으로 파싱 시도
+                    try:
+                        crawl_result = json.loads(result_str)
+                        logger.info("Successfully parsed crawl result as JSON")
+                    except json.JSONDecodeError:
+                        # JSON으로 파싱할 수 없는 경우 원본 문자열 사용
+                        crawl_result = result_str
+                        logger.info("Using raw string as crawl result (not valid JSON)")
+                except Exception as e:
+                    logger.error(f"Error reading result file: {e}")
+                    test_result["error"] = f"Error reading result file: {e}"
+                    crawl_result = None
+            else:
+                logger.warning(f"No crawl result file found at {result_file_path}")
+                # 결과 파일이 없는 경우 stdout 사용
+                crawl_result = stdout
+                logger.info("Using stdout as crawl result")
+            
+            # 결과 샘플 저장
+            if crawl_result is not None:
+                if isinstance(crawl_result, list) and len(crawl_result) > 0:
+                    test_result["data_sample"] = crawl_result[:5] if len(crawl_result) > 5 else crawl_result
+                    logger.info(f"Crawl result is a list with {len(crawl_result)} items")
+                elif isinstance(crawl_result, dict):
+                    test_result["data_sample"] = crawl_result
+                    logger.info(f"Crawl result is a dictionary with {len(crawl_result)} keys")
+                else:
+                    # 문자열인 경우 처리
+                    result_str = str(crawl_result)
+                    test_result["data_sample"] = result_str[:1000] if len(result_str) > 1000 else result_str
+                    logger.info(f"Crawl result is a string of length {len(result_str)}")
+            else:
+                # 결과가 없는 경우 stdout 사용
+                logger.warning("No crawl result found, using stdout")
+                test_result["data_sample"] = stdout[:1000] if stdout and len(stdout) > 1000 else stdout
+            
+            # 테스트 문자열 확인
+            if test_string and crawl_result is not None:
+                result_str = str(crawl_result)
+                test_result["test_string_found"] = test_string.lower() in result_str.lower()
+                logger.info(f"Test string '{test_string}' found: {test_result['test_string_found']}")
+            
+            # 테스트 성공 여부 판단
+            test_result["success"] = (
+                test_result["error"] is None and 
+                test_result["data_sample"] is not None and 
+                (not test_string or test_result["test_string_found"])
+            )
+            
+            # 실행한 코드 저장
+            test_result["executed_code"] = python_code
+            
+            logger.info(f"Test crawl completed in {execution_time:.2f} seconds")
+            logger.info(f"Test result: {'Success' if test_result['success'] else 'Failed'}")
+            
+            # 성공한 경우 데이터 샘플 로깅
+            if test_result["success"]:
+                logger.info(f"Sample data: {str(test_result['data_sample'])[:200]}...")
+            
+            return test_result
+            
+        except Exception as e:
+            logger.error(f"Error in test_crawl_functionality: {e}")
+            logger.error(traceback.format_exc())
+            return {
+                "success": False,
+                "time_taken": 0,
+                "error": str(e),
+                "data_sample": None,
+                "test_string_found": False,
+                "executed_code": python_code if 'python_code' in locals() else None,
+                "output": None,
+                "stderr": traceback.format_exc()
+            }
 
 if __name__ == "__main__":
     os.chdir("d:")
