@@ -290,22 +290,9 @@ class ChromeCDPClient:
             # 네트워크 및 페이지 활성화
             crawl_tab.Network.enable()
             crawl_tab.Page.enable()
+            crawl_tab.Runtime.enable()  # JavaScript 실행을 위해 활성화
             browser.activate_tab(crawl_tab_id)
             logger.info("Network and Page domains enabled and tab activated")
-            
-            # 네트워크 요청 및 응답 저장을 위한 리스트
-            resources = []
-            
-            # 네트워크 요청 이벤트 리스너 설정
-            def network_request_will_be_sent(request, **kwargs):
-                resources.append({
-                    'url': request.get('url'),
-                    'type': request.get('resourceType', ''),
-                    'downloaded': False
-                })
-            
-            crawl_tab.Network.requestWillBeSent = network_request_will_be_sent
-            logger.info("Network request listener registered")
             
             # 2. 해당 웹페이지 접속
             logger.info(f"2. Navigating to URL: {url}")
@@ -314,7 +301,7 @@ class ChromeCDPClient:
             # 페이지 로드 완료 기다리기
             logger.info("Waiting for page load to complete")
             
-            # DOM 완료 이벤트 대기 - wait_event는 직접 호출이 아닌 이벤트 리스너로 설정
+            # DOM 완료 이벤트 대기
             page_loaded = False
             
             def on_page_load_event(**kwargs):
@@ -353,502 +340,352 @@ class ChromeCDPClient:
             
             logger.info(f"HTML saved to: {html_filename}")
             
-            # 필요한 리소스 다운로드 (JS, CSS)
-            resource_files = []
+            # DOM 구조 및 렌더링된 상태 분석
+            logger.info("Analyzing DOM structure and rendered state")
             
-            for resource in resources:
-                # JS와 CSS 파일만 다운로드
-                resource_type = resource.get('type', '').lower()
-                resource_url = resource.get('url', '')
-                
-                if (resource_type in ['script', 'stylesheet'] or 
-                    resource_url.endswith('.js') or resource_url.endswith('.css')):
-                    try:
-                        # 상대 URL을 절대 URL로 변환
-                        if not resource_url.startswith(('http://', 'https://')):
-                            resource_url = urljoin(url, resource_url)
-                        
-                        # 파일명 추출
-                        parsed_url = urlparse(resource_url)
-                        filename = os.path.basename(parsed_url.path)
-                        if not filename:
-                            # 파일 이름이 없는 경우 URL 해시 사용
-                            filename = f"resource_{hash(resource_url) % 10000}"
-                        
-                        if resource_url.endswith('.js'):
-                            filename = f"{filename}.js" if not filename.endswith('.js') else filename
-                        elif resource_url.endswith('.css'):
-                            filename = f"{filename}.css" if not filename.endswith('.css') else filename
-                        
-                        # 리소스 다운로드
-                        logger.info(f"Downloading resource: {resource_url}")
-                        response = requests.get(resource_url, timeout=10)
-                        
-                        if response.status_code == 200:
-                            file_path = os.path.join(tmp_dir, filename)
-                            with open(file_path, 'wb') as f:
-                                f.write(response.content)
-                            
-                            resource['downloaded'] = True
-                            resource['local_path'] = file_path
-                            resource_files.append({
-                                'url': resource_url,
-                                'local_path': file_path,
-                                'type': 'js' if resource_url.endswith('.js') else 'css',
-                                'filename': filename,
-                                'size': len(response.content)
-                            })
-                            
-                            logger.info(f"Resource saved to: {file_path}")
-                    except Exception as e:
-                        logger.error(f"Error downloading resource {resource_url}: {e}")
+            # 렌더링된 전체 페이지 스크린샷 캡처
+            screenshot_result = crawl_tab.Page.captureScreenshot()
+            screenshot_data = screenshot_result.get('data', '')
+            if screenshot_data:
+                screenshot_filename = os.path.join(tmp_dir, f"{current_date}_{url_filename}_screenshot.png")
+                with open(screenshot_filename, 'wb') as f:
+                    f.write(base64.b64decode(screenshot_data))
+                logger.info(f"Screenshot saved to: {screenshot_filename}")
             
-            # 4. 분석 세션 시작 - 반복 대화를 통한 크롤링 방법 분석
-            logger.info("4. Starting interactive analysis session with ChatGPT")
+            # 페이지 기본 정보 수집
+            page_info = crawl_tab.Runtime.evaluate(
+                expression="""
+                (function() {
+                    return {
+                        title: document.title,
+                        url: window.location.href,
+                        size: {
+                            width: window.innerWidth,
+                            height: window.innerHeight
+                        },
+                        documentReady: document.readyState
+                    };
+                })()
+                """
+            )
+            page_info = page_info.get('result', {}).get('value', {})
+            
+            # 4. 대화형 JavaScript 크롤링 세션 시작
+            logger.info("4. Starting interactive JavaScript crawling session with ChatGPT")
             
             # 먼저 HTML 파일을 ChatGPT로 업로드
             logger.info(f"Uploading HTML file: {html_filename}")
             self.simulate_paste_local_file(html_filename, self.tab)
             time.sleep(1)  # 업로드 완료 기다리기
             
-            # 중요도 순서로 리소스 정렬 (CSS, JS 순으로, 크기가 작은 순)
-            # CSS가 더 중요하므로 CSS 파일을 먼저 정렬
-            sorted_resources = sorted(resource_files, 
-                                  key=lambda x: (0 if x['type'] == 'css' else 1, x['size']))
+            # 스크린샷도 업로드
+            if os.path.exists(screenshot_filename):
+                logger.info(f"Uploading screenshot: {screenshot_filename}")
+                self.simulate_paste_local_file(screenshot_filename, self.tab)
+                time.sleep(1)
             
-            # 최대 9개의 중요 리소스 파일 업로드 (HTML 파일 1개 + 리소스 9개 = 총 10개)
-            uploaded_resources = []
-            for i, resource in enumerate(sorted_resources[:9]):  # 최대 9개 리소스
-                try:
-                    resource_path = resource['local_path']
-                    logger.info(f"Uploading resource {i+1}/9: {resource['filename']}")
-                    self.simulate_paste_local_file(resource_path, self.tab)
-                    uploaded_resources.append(resource)
-                    time.sleep(1)  # 업로드 사이에 약간의 지연 시간
-                except Exception as e:
-                    logger.error(f"Error uploading resource {resource['filename']}: {e}")
-            
-            # 반복 분석 세션 초기화
+            # 대화형 크롤링 세션 초기화
             max_iterations = 10  # 최대 반복 횟수
             iteration = 0
-            analysis_complete = False
-            final_result = {}
+            final_result = {"steps": []}
+            crawling_complete = False
             
-            # 초기 프롬프트 작성
+            # 초기 프롬프트 작성 - JavaScript 크롤링 코드 요청
             initial_prompt = f"""
-웹 페이지 크롤링 분석 요청:
-목적: {purpose}
+목적: {purpose}에 관한 웹페이지 크롤링
 
-방금 업로드한 파일들:
-1. HTML 소스 파일: {os.path.basename(html_filename)}
+이 웹페이지({url})를 크롤링하기 위해 JavaScript 코드를 작성해 주세요.
+개발자 도구 콘솔에서 바로 실행할 수 있는 JavaScript 코드로 작성해야 합니다.
+
+다음 단계로 진행하겠습니다:
+1. 먼저 당신이 첫 번째 JavaScript 코드 조각을 작성해주세요. 이 코드는 페이지를 분석하고 {purpose}와 관련된 데이터를 찾아내는 데 사용됩니다.
+2. 나는 그 코드를 브라우저에서 실행하고 결과를 알려드리겠습니다.
+3. 그 결과를 바탕으로 후속 작업을 위한 다음 JavaScript 코드를 작성해주세요.
+4. 이 과정을 원하는 데이터를 완전히 추출할 때까지 반복하겠습니다.
+
+JavaScript 코드를 작성할 때 다음 가이드라인을 따라주세요:
+- 코드는 ```javascript 와 ``` 사이에 작성해야 합니다.
+- 코드는 비동기(async/await) 형태로 작성하고 Promise를 사용하여 결과를 반환하세요.
+- 코드는 즉시 실행 함수 표현식(IIFE) 형태로 작성하세요. 예: (async function() { ... })()
+- JSON 형식으로 결과를 반환하세요.
+- 코드가 오류 처리를 포함하도록 해주세요.
+- 코드는 한 번에 하나의 작업만 수행하도록 집중하세요.
+
+첫 번째 JavaScript 크롤링 코드를 작성해주세요. 페이지 구조 분석과 크롤링 대상 요소 식별에 집중하세요.
 """
 
-            # 업로드된 리소스 파일 목록 추가
-            for i, resource in enumerate(uploaded_resources):
-                initial_prompt += f"{i+2}. {resource['type'].upper()} 파일: {resource['filename']} (URL: {resource['url']})\n"
-
-            initial_prompt += f"""
-추가로 다운로드된 파일 수: {len(resource_files) - len(uploaded_resources)}
-
-다음 단계에 따라 크롤링 방법을 분석해주세요:
-1. 이 웹페이지의 구조를 분석하고 주요 요소들을 식별해주세요.
-2. 목적({purpose})에 맞는 데이터를 추출하기 위한 최적의 방법을 제안해주세요.
-3. 필요한 셀렉터(CSS/XPath)와 크롤링 로직을 Python 코드로 제공해주세요.
-4. JavaScript가 필요한 부분이 있다면 어떻게 처리해야 하는지 설명해주세요.
-5. 페이지 내 동적 콘텐츠 로딩 처리 방법도 포함해주세요.
-6. pythnonpath 는 {os.path.abspath(self.pythonpath)} 입니다.
-
-응답 형식(필수):
-```json
-{{
-  "page_structure": "웹페이지 구조 설명",
-  "target_elements": ["목적에 맞는 데이터 요소들"],
-  "selectors": {{
-    "element_name1": "selector1",
-    "element_name2": "selector2"
-  }},
-  "crawling_method": "크롤링 방법 설명",
-  "python_code": "크롤링을 위한 파이썬 코드",
-  "javascript_handling": "필요한 경우 JavaScript 처리 방법",
-  "dynamic_content": "동적 콘텐츠 처리 방법",
-  "analysis_complete": true/false,
-  "additional_instructions": "분석을 계속하기 위해 필요한 추가 정보나 지시사항"
-}}
-```
-
-JSON 응답의 "analysis_complete" 필드가 true인 경우 분석이 완료된 것으로 간주합니다.
-분석이 불완전하거나 추가 정보가 필요한 경우 "analysis_complete": false로 설정하고 "additional_instructions" 필드에 필요한 내용을 명시해주세요.
-"""
+            logger.info("Sending initial prompt to ChatGPT")
+            self.send_query(browser, self.tab, initial_prompt)
             
-            # 반복 분석 세션 시작
-            logger.info("Starting interactive analysis loop")
-            current_prompt = initial_prompt
+            # 응답 대기
+            if not self.wait_for_response_complete(self.tab, timeout=300):
+                logger.warning("Initial response waiting timed out")
+                return "오류: ChatGPT 응답 대기 시간 초과"
             
-            while iteration < max_iterations and not analysis_complete:
+            # 반복 크롤링 세션 시작
+            while iteration < max_iterations and not crawling_complete:
                 iteration += 1
-                logger.info(f"Analysis iteration {iteration}/{max_iterations}")
+                logger.info(f"JavaScript crawling iteration {iteration}/{max_iterations}")
                 
-                # ChatGPT에 프롬프트 전송
-                logger.info(f"Sending prompt for iteration {iteration}")
-                self.send_query(browser, self.tab, current_prompt)
-                
-                # 응답 대기
-                logger.info("Waiting for ChatGPT response")
-                if not self.wait_for_response_complete(self.tab, timeout=300):
-                    logger.warning("ChatGPT response timeout")
-                    break
-                
-                # ChatGPT 응답 추출
-                logger.info("Extracting response from ChatGPT")
-                response_text = self.extract_chatgpt_response(self.tab)
-                logger.info(f"Received response: {response_text}")
-                
-                # 응답에서 JSON 부분 추출
-                json_pattern = r'''(\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\})'''
-                json_matches = re.findall(json_pattern, response_text, re.MULTILINE)
-                logger.info(f"JSON matches: {json_matches}")
-                # 포맷 오류 카운터 추가 (연속으로 JSON 형식을 찾지 못한 횟수)
-                if not hasattr(self, '_json_format_error_count'):
-                    self._json_format_error_count = 0
-                
-                if json_matches:
-                    # JSON 응답을 찾았으므로 카운터 초기화
-                    self._json_format_error_count = 0
+                # ChatGPT 응답에서 JavaScript 코드 추출
+                js_code = self.extract_javascript_code(self.tab)
+                if not js_code:
+                    logger.warning("No JavaScript code found in response")
                     
-                    try:
-                        # JSON 파싱
-                        logger.info(f"Found JSON match of length: {len(json_matches[0])}")
-                        result_data = json.loads(json_matches[0].strip())
-                        logger.info("Successfully parsed JSON response")
-                        
-                        # 분석 완료 여부 확인
-                        analysis_complete = result_data.get('analysis_complete', False)
-                        if analysis_complete:
-                            logger.info("Analysis marked as complete in response")
-                            final_result = result_data
-                            
-                            # 크롤링 테스트 실행
-                            logger.info(f"Running test crawl to verify functionality with test string: {test_string}")
-                            test_result = self.test_crawl_functionality(result_data, url, test_string)
-                            
-                            # 테스트 결과를 최종 결과에 추가
-                            final_result['test_crawl_result'] = test_result
-                            
-                            # 테스트 결과에 따른 추가 메시지 구성
-                            if test_result['success']:
-                                logger.info("Test crawl successful!")
-                                if test_string and test_result['test_string_found']:
-                                    logger.info(f"The test string '{test_string}' was found in the crawled data")
-                                    final_result['test_string_validation'] = "Test string found successfully"
-                                elif test_string:
-                                    logger.warning(f"The test string '{test_string}' was NOT found in the crawled data")
-                                    final_result['test_string_validation'] = "Test string not found in crawled data"
-                            else:
-                                # 테스트 실패 원인 상세 분석
-                                error_msg = test_result.get('error', 'Unknown error')
-                                error_details = []
-                                
-                                # 오류 유형 분석
-                                if "ModuleNotFoundError" in error_msg or "ImportError" in error_msg:
-                                    # 패키지 설치 관련 오류
-                                    error_details.append("필요한 패키지가 설치되지 않았습니다.")
-                                    
-                                    # 누락된 패키지 식별
-                                    missing_package_match = re.search(r"ModuleNotFoundError: No module named '([^']+)'", error_msg)
-                                    if missing_package_match:
-                                        package_name = missing_package_match.group(1)
-                                        error_details.append(f"누락된 패키지: {package_name}")
-                                        error_details.append(f"설치 방법: pip install {package_name}")
-                                
-                                elif "ConnectionError" in error_msg or "ConnectionRefusedError" in error_msg:
-                                    # 연결 관련 오류
-                                    error_details.append("웹 사이트 연결에 실패했습니다.")
-                                    error_details.append("가능한 원인: 인터넷 연결 문제, 서버 접근 제한, URL 오류")
-                                
-                                elif "HTTPError" in error_msg or "status code" in error_msg.lower():
-                                    # HTTP 오류
-                                    status_code_match = re.search(r"(\d{3})", error_msg)
-                                    if status_code_match:
-                                        status_code = status_code_match.group(1)
-                                        error_details.append(f"HTTP 오류 코드: {status_code}")
-                                        
-                                        if status_code.startswith('4'):
-                                            error_details.append("클라이언트 오류: 요청이 올바르지 않거나 접근 권한이 없습니다.")
-                                        elif status_code.startswith('5'):
-                                            error_details.append("서버 오류: 웹사이트 서버에 문제가 있습니다.")
-                                    else:
-                                        error_details.append("HTTP 요청 오류가 발생했습니다.")
-                                
-                                elif "IndexError" in error_msg or "KeyError" in error_msg:
-                                    # 데이터 접근 오류
-                                    error_details.append("웹 페이지 구조에서 필요한 데이터를 찾지 못했습니다.")
-                                    error_details.append("가능한 원인: 웹 페이지 구조 변경, 선택자(selector) 오류")
-                                
-                                elif "SyntaxError" in error_msg:
-                                    # 문법 오류
-                                    error_details.append("생성된 크롤링 코드에 문법 오류가 있습니다.")
-                                    syntax_line_match = re.search(r"line (\d+)", error_msg)
-                                    if syntax_line_match:
-                                        line_num = syntax_line_match.group(1)
-                                        error_details.append(f"오류 발생 위치: {line_num}번 줄")
-                                
-                                elif "AttributeError" in error_msg:
-                                    # 속성 접근 오류
-                                    error_details.append("존재하지 않는 객체 속성에 접근을 시도했습니다.")
-                                    attr_match = re.search(r"has no attribute '([^']+)'", error_msg)
-                                    if attr_match:
-                                        attr_name = attr_match.group(1)
-                                        error_details.append(f"존재하지 않는 속성: {attr_name}")
-                                
-                                elif "TimeoutError" in error_msg or "timeout" in error_msg.lower():
-                                    # 시간 초과 오류
-                                    error_details.append("실행 시간이 초과되었습니다.")
-                                    error_details.append("가능한 원인: 웹사이트 응답 지연, 복잡한 처리로 인한 실행 지연")
-                                
-                                elif "JSONDecodeError" in error_msg:
-                                    # JSON 파싱 오류
-                                    error_details.append("응답을 JSON으로 파싱하는 데 실패했습니다.")
-                                    error_details.append("가능한 원인: 웹사이트가 예상된 JSON 형식으로 응답하지 않음")
-                                
-                                # 기본 오류 메시지 추가
-                                error_summary = f"테스트 실패: {error_msg}"
-                                if error_details:
-                                    error_summary += "\n\n원인 분석:\n- " + "\n- ".join(error_details)
-                                
-                                # stderr 내용이 있으면 추가
-                                stderr_content = test_result.get('stderr', '')
-                                if stderr_content and len(stderr_content.strip()) > 0:
-                                    error_summary += f"\n\n오류 로그:\n{stderr_content[:500]}"
-                                
-                                logger.warning(f"Test crawl failed: {error_msg}")
-                                final_result['test_string_validation'] = error_summary
-                                final_result['test_error_details'] = error_details
-                                
-                                # 수정 제안 추가
-                                fix_suggestions = []
-                                if "ModuleNotFoundError" in error_msg:
-                                    missing_pkg = re.search(r"No module named '([^']+)'", error_msg)
-                                    if missing_pkg:
-                                        pkg_name = missing_pkg.group(1)
-                                        fix_suggestions.append(f"패키지 설치: pip install {pkg_name}")
-                                
-                                if fix_suggestions:
-                                    final_result['fix_suggestions'] = fix_suggestions
-                            
-                            # 데이터 샘플 추가
-                            if test_result.get('data_sample'):
-                                if isinstance(test_result['data_sample'], list):
-                                    sample_size = min(3, len(test_result['data_sample']))
-                                    final_result['data_preview'] = test_result['data_sample'][:sample_size]
-                                elif isinstance(test_result['data_sample'], dict):
-                                    final_result['data_preview'] = test_result['data_sample']
-                                else:
-                                    sample_data = str(test_result['data_sample'])
-                                    if len(sample_data) > 500:
-                                        final_result['data_preview'] = sample_data[:500] + "..."
-                                    else:
-                                        final_result['data_preview'] = sample_data
-                            
-                            break
-                        else:
-                            # 추가 지시사항이 있으면 다음 프롬프트 구성
-                            additional_instructions = result_data.get('additional_instructions', '')
-                            logger.info(f"Analysis not complete, additional instructions: {additional_instructions[:100]}...")
-                            
-                            # 다음 프롬프트 구성
-                            current_prompt = f"""
-이전 분석에 대한 피드백:
+                    # JavaScript 코드 요청 재시도
+                    retry_prompt = """
+죄송합니다만, 응답에서 JavaScript 코드를 찾을 수 없습니다.
+다음 형식으로 JavaScript 코드를 작성해주세요:
 
-{additional_instructions}
-
-이전 분석과 피드백을 기반으로 크롤링 방법을 다시 분석해주세요. 웹페이지 구조와 목적({purpose})에 맞는 최적의 크롤링 방법을 제시해주세요.
-
-반드시 다음 형식의 JSON으로 응답해주세요:
-```json
-{{
-  "page_structure": "웹페이지 구조 설명",
-  "target_elements": ["목적에 맞는 데이터 요소들"],
-  "selectors": {{
-    "element_name1": "selector1",
-    "element_name2": "selector2"
-  }},
-  "crawling_method": "크롤링 방법 설명",
-  "python_code": "크롤링을 위한 파이썬 코드",
-  "javascript_handling": "필요한 경우 JavaScript 처리 방법",
-  "dynamic_content": "동적 콘텐츠 처리 방법",
-  "analysis_complete": true/false,
-  "additional_instructions": "분석을 계속하기 위해 필요한 추가 정보나 지시사항"
-}}
+```javascript
+(async function() {
+    try {
+        // 페이지 분석 및 데이터 추출 코드
+        
+        return {
+            success: true,
+            data: 추출된_데이터,
+            message: "분석 결과 메시지"
+        };
+    } catch (error) {
+        return {
+            success: false,
+            error: error.message,
+            message: "오류 발생"
+        };
+    }
+})();
 ```
 
-"analysis_complete" 필드가 true면 분석이 완료된 것으로 간주합니다. 만약 분석이 불완전하거나 추가 정보가 필요하면 false로 설정하고 "additional_instructions" 필드에 필요한 내용을 명시해주세요.
+코드 블록은 반드시 ```javascript로 시작하고 ```로 끝나야 합니다.
 """
-                            
-                            # 중간 결과 저장
-                            intermediate_result_path = os.path.join(tmp_dir, f"{current_date}_{url_filename}_iteration_{iteration}.json")
-                            with open(intermediate_result_path, 'w', encoding='utf-8') as f:
-                                json.dump(result_data, f, ensure_ascii=False, indent=2)
-                            logger.info(f"Intermediate analysis saved to: {intermediate_result_path}")
-                            
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Error parsing JSON from response: {e}")
-                        # 오류 발생 시 사용자에게 오류 안내 프롬프트
-                        self._json_format_error_count += 1
-                        current_prompt = f"""
-이전 응답에서 JSON 형식을 정확히 파싱할 수 없었습니다. 다음 형식으로 정확하게 응답해주세요:
-
-```json
-{{
-  "page_structure": "웹페이지 구조 설명",
-  "target_elements": ["목적에 맞는 데이터 요소들"],
-  "selectors": {{
-    "element_name1": "selector1",
-    "element_name2": "selector2"
-  }},
-  "crawling_method": "크롤링 방법 설명",
-  "python_code": "크롤링을 위한 파이썬 코드",
-  "javascript_handling": "필요한 경우 JavaScript 처리 방법",
-  "dynamic_content": "동적 콘텐츠 처리 방법",
-  "analysis_complete": true/false,
-  "additional_instructions": "분석을 계속하기 위해 필요한 추가 정보나 지시사항"
-}}
-```
-
-JSON 형식에 오류가 없도록 주의하세요. 특히 중괄호, 따옴표, 콤마 등의 구문을 정확히 사용해야 합니다.
-"""
-                else:
-                    # JSON 형식이 없는 경우 형식 요청 프롬프트
-                    logger.warning("No JSON format found in response")
-                    self._json_format_error_count += 1
+                    self.send_query(browser, self.tab, retry_prompt)
                     
-                    # 연속으로 3회 이상 JSON 형식을 찾지 못한 경우, 분석을 강제 종료하고 수동으로 결과 생성
-                    if self._json_format_error_count >= 3:
-                        logger.warning(f"Failed to get JSON format after {self._json_format_error_count} consecutive attempts, forcing analysis completion")
-                        
-                        # 원본 응답에서 유용한 정보 추출
-                        logger.info("Attempting to extract useful information from unstructured response")
-                        extracted_data = self.extract_useful_content_from_text(response_text)
-                        
-                        if extracted_data["python_code"] or extracted_data["page_structure"]:
-                            logger.info("Successfully extracted useful content from unstructured text")
-                            final_result = extracted_data
-                        else:
-                            # 추출에 실패한 경우 기본 결과 생성
-                            logger.warning("Failed to extract useful content, using default result")
-                            text_content = response_text.strip()
-                            final_result = {
-                                "page_structure": "웹페이지 구조 자동 추출 실패",
-                                "target_elements": ["자동 추출 실패"],
-                                "selectors": {},
-                                "crawling_method": "원본 응답에서 형식화된 JSON을 찾지 못했습니다.",
-                                "python_code": "# 원본 응답에서 파이썬 코드를 추출하지 못했습니다",
-                                "javascript_handling": "없음",
-                                "dynamic_content": "없음",
-                                "analysis_complete": True,
-                                "raw_response": text_content[:1000]  # 원본 응답 일부 저장
-                            }
+                    if not self.wait_for_response_complete(self.tab, timeout=180):
+                        logger.warning("Retry response waiting timed out")
+                    
+                    js_code = self.extract_javascript_code(self.tab)
+                    if not js_code:
+                        logger.error("Failed to get JavaScript code after retry")
                         break
+                
+                # JavaScript 코드 실행
+                logger.info(f"Executing JavaScript code (iteration {iteration})")
+                try:
+                    # 크롤 탭에서 JavaScript 코드 실행
+                    js_result = crawl_tab.Runtime.evaluate(
+                        expression=js_code,
+                        awaitPromise=True,
+                        returnByValue=True,
+                        timeout=30000  # 30초 타임아웃
+                    )
                     
-                    # 최종 시도: 이전 프롬프트가 성공하지 않았다면, 극단적으로 단순화된 프롬프트 사용
-                    if self._json_format_error_count == 2:
-                        current_prompt = """
-중요: JSON 형식으로만 응답하세요. 다른 텍스트 없이 오직 아래 형식의 JSON만 반환하세요:
-
-```json
-{
-  "page_structure": "웹페이지 구조 설명",
-  "target_elements": ["목적에 맞는 데이터 요소들"],
-  "selectors": {
-    "element_name1": "selector1",
-    "element_name2": "selector2"
-  },
-  "crawling_method": "크롤링 방법 설명",
-  "python_code": "크롤링을 위한 파이썬 코드",
-  "javascript_handling": "필요한 경우 JavaScript 처리 방법",
-  "dynamic_content": "동적 콘텐츠 처리 방법",
-  "analysis_complete": true,
-  "additional_instructions": ""
-}
-```
-
-JSON 형식만 응답하세요. 다른 텍스트는 모두 제외하세요.
-"""
+                    # 실행 결과 확인
+                    js_error = js_result.get('exceptionDetails')
+                    if js_error:
+                        error_msg = js_error.get('exception', {}).get('description', 'Unknown JS error')
+                        logger.error(f"JavaScript execution error: {error_msg}")
+                        
+                        # 오류 정보를 포함한 결과 객체 생성
+                        execution_result = {
+                            "success": False,
+                            "error": error_msg,
+                            "message": "JavaScript 실행 중 오류 발생"
+                        }
                     else:
-                        # 더 명확한 지시사항으로 JSON 형식 응답 요청
-                        current_prompt = f"""
-중요: 응답에서 JSON 형식을 찾을 수 없습니다. 
-
-다음 JSON 형식으로만 응답해주세요. 설명이나 추가 텍스트 없이 정확히 다음 형식의 JSON만 응답하세요:
-
+                        # 성공적으로 실행된 경우 결과 추출
+                        result_value = js_result.get('result', {}).get('value')
+                        logger.info(f"JavaScript execution result: {str(result_value)[:200]}...")
+                        
+                        # 결과가 딕셔너리가 아니면 딕셔너리로 변환
+                        if not isinstance(result_value, dict):
+                            execution_result = {
+                                "success": True,
+                                "data": result_value,
+                                "message": "JavaScript가 실행되었지만 예상된 형식이 아닙니다."
+                            }
+                        else:
+                            execution_result = result_value
+                    
+                    # 단계 결과 저장
+                    step_result = {
+                        "iteration": iteration,
+                        "js_code": js_code,
+                        "result": execution_result
+                    }
+                    final_result["steps"].append(step_result)
+                    
+                    # 완료 여부 확인
+                    if execution_result.get('complete', False) or execution_result.get('message') == "크롤링 완료":
+                        logger.info("Crawling process marked as complete")
+                        crawling_complete = True
+                        final_result["success"] = True
+                        final_result["message"] = "크롤링이 성공적으로 완료되었습니다."
+                        break
+                        
+                    # 다음 JavaScript 코드 요청 프롬프트 구성
+                    next_prompt = f"""
+JavaScript 코드 실행 결과:
 ```json
-{{
-  "page_structure": "웹페이지 구조 설명",
-  "target_elements": ["목적에 맞는 데이터 요소들"],
-  "selectors": {{
-    "element_name1": "selector1",
-    "element_name2": "selector2"
-  }},
-  "crawling_method": "크롤링 방법 설명",
-  "python_code": "크롤링을 위한 파이썬 코드",
-  "javascript_handling": "필요한 경우 JavaScript 처리 방법",
-  "dynamic_content": "동적 콘텐츠 처리 방법",
-  "analysis_complete": false,
-  "additional_instructions": "분석을 계속하기 위해 필요한 추가 정보나 지시사항"
-}}
+{json.dumps(execution_result, ensure_ascii=False, indent=2)}
 ```
 
-반드시 위 JSON 형식으로만 응답해주세요. JSON 코드 블록을 백틱(```) 안에 정확히 포함시켜야 합니다.
-어떤 설명이나 추가 텍스트를 포함하지 마세요. JSON 만 응답하세요.
+위 결과를 바탕으로 다음 단계의 크롤링을 위한 JavaScript 코드를 작성해주세요.
+
+{f'목표 데이터에 "{test_string}"이 포함되어 있는지 확인해주세요.' if test_string else ''}
+
+아직 목표한 데이터를 완전히 추출하지 못했다면, 다음 작업을 위한 JavaScript 코드를 작성해주세요.
+이전 코드의 문제점이 있다면 수정하고, 다음 단계로 진행하세요.
+
+만약 크롤링이 완료되었다면, 최종 결과를 정리하는 JavaScript 코드를 작성하고 결과 객체에 `complete: true`를 포함시켜주세요.
+
+코드는 다음 형식으로 작성해주세요:
+```
+(async function() {{
+    try {{
+        // 이전 결과를 바탕으로 다음 작업 수행
+        
+        return {{
+            success: true,
+            data: 추출된_데이터,
+            message: "작업 상태 메시지"
+            // 필요시 complete: true 추가
+        }};
+    }} catch (error) {{
+        return {{
+            success: false,
+            error: error.message,
+            message: "오류 발생"
+        }};
+    }}
+}})();
+```
 """
+                    
+                    # 다음 프롬프트 전송
+                    logger.info("Sending next prompt with execution results")
+                    self.send_query(browser, self.tab, next_prompt)
+                    
+                    if not self.wait_for_response_complete(self.tab, timeout=300):
+                        logger.warning("Next response waiting timed out")
+                        break
+                
+                except Exception as js_exec_error:
+                    logger.error(f"Error during JavaScript execution: {js_exec_error}")
+                    
+                    # 오류 정보를 포함한 프롬프트 구성
+                    error_prompt = f"""
+JavaScript 코드 실행 중 오류가 발생했습니다:
+```
+{str(js_exec_error)}
+```
+
+이 오류를 해결할 수 있는 새로운 JavaScript 코드를 작성해주세요.
+코드는 다음 형식으로 작성해주세요:
+
+```
+(async function() {{
+    try {{
+        // 오류를 수정한 코드
+        
+        return {{
+            success: true,
+            data: 추출된_데이터,
+            message: "오류 수정 후 실행 결과"
+        }};
+    }} catch (error) {{
+        return {{
+            success: false,
+            error: error.message,
+            message: "오류 발생"
+        }};
+    }}
+}})();
+```
+"""
+                    
+                    # 오류 프롬프트 전송
+                    logger.info("Sending error prompt for JavaScript fix")
+                    self.send_query(browser, self.tab, error_prompt)
+                    
+                    if not self.wait_for_response_complete(self.tab, timeout=180):
+                        logger.warning("Error response waiting timed out")
+                        break
             
-            # 반복 분석 완료 또는 최대 반복 횟수 도달
-            if analysis_complete:
-                logger.info(f"Analysis completed successfully after {iteration} iterations")
-            else:
-                logger.warning(f"Maximum iterations ({max_iterations}) reached without completing analysis")
-                if not final_result:
-                    # 마지막 응답에서 최선의 결과 추출 시도
-                    try:
-                        if json_matches and json_matches[0]:
-                            final_result = json.loads(json_matches[0].strip())
-                        else:
-                            final_result = {"error": "분석 완료되지 않음", "raw_response": response_text[:1000]}
-                    except:
-                        final_result = {"error": "분석 완료되지 않음", "raw_response": response_text[:1000]}
+            # 최종 결과 정리
+            if iteration >= max_iterations and not crawling_complete:
+                logger.warning(f"Maximum iterations ({max_iterations}) reached without completing crawling")
+                final_result["success"] = False
+                final_result["message"] = f"최대 반복 횟수({max_iterations})에 도달했지만 크롤링이 완료되지 않았습니다."
             
-            # 최종 결과 저장
-            final_result['downloaded_resources'] = resource_files
-            final_result['uploaded_resources'] = uploaded_resources
-            final_result['target_url'] = url
-            final_result['purpose'] = purpose
-            final_result['date'] = current_date
-            final_result['html_file'] = html_filename
-            final_result['iterations_count'] = iteration
+            # 크롤링된 데이터 추출
+            crawled_data = []
+            for step in final_result["steps"]:
+                if step["result"].get("success", False) and step["result"].get("data"):
+                    data = step["result"]["data"]
+                    if isinstance(data, list):
+                        crawled_data.extend(data)
+                    elif isinstance(data, dict) and "items" in data:
+                        crawled_data.extend(data["items"])
+                    elif isinstance(data, dict):
+                        crawled_data.append(data)
             
-            # 결과 저장
+            # 중복 제거 (가능한 경우)
+            try:
+                unique_data = []
+                seen_items = set()
+                
+                for item in crawled_data:
+                    item_str = json.dumps(item, sort_keys=True) if isinstance(item, dict) else str(item)
+                    if item_str not in seen_items:
+                        seen_items.add(item_str)
+                        unique_data.append(item)
+                
+                final_result["data"] = unique_data
+            except:
+                final_result["data"] = crawled_data
+            
+            # test_string 확인
+            if test_string:
+                data_str = json.dumps(final_result["data"], ensure_ascii=False)
+                final_result["test_string_found"] = test_string.lower() in data_str.lower()
+                logger.info(f"Test string '{test_string}' found: {final_result['test_string_found']}")
+            
+            # 결과 파일 저장
             with open(result_path, 'w', encoding='utf-8') as f:
                 json.dump(final_result, f, ensure_ascii=False, indent=2)
             
-            logger.info(f"Final crawling method saved to: {result_path}")
+            logger.info(f"Final crawling result saved to: {result_path}")
             
             # 안전하게 탭 닫기
             try:
                 logger.info(f"Attempting to safely close tab with ID: {crawl_tab_id}")
-                self.safely_close_tab(browser, crawl_tab)
+                # 먼저 WebSocket 연결 정상 종료
+                try:
+                    crawl_tab.stop()
+                    time.sleep(0.5)  # 소켓 정리를 위한 대기
+                except Exception as ws_error:
+                    logger.warning(f"Error stopping WebSocket: {ws_error}")
+                
+                # 탭 닫기
+                self.browser.close_tab(crawl_tab_id)
                 logger.info(f"Tab {crawl_tab_id} safely closed")
             except Exception as e:
                 logger.error(f"Error during tab cleanup: {e}")
                 logger.error(traceback.format_exc())
+                
+                # 변수 정리
+                crawl_tab = None
             
             # 결과 객체 반환
             result_obj = {
-                'success': True,
+                'success': final_result["success"],
                 'result_file': result_path,
                 'html_file': html_filename,
-                'resources': resource_files,
-                'uploaded_resources': uploaded_resources,
                 'iterations': iteration,
-                'analysis_complete': analysis_complete
+                'crawling_complete': crawling_complete,
+                'data': final_result["data"],
+                'message': final_result["message"] if "message" in final_result else ""
             }
             
             return result_obj
@@ -879,66 +716,109 @@ JSON 형식만 응답하세요. 다른 텍스트는 모두 제외하세요.
                 'error': str(e)
             }
 
-    def extract_chatgpt_response(self, tab):
+    
+    def extract_javascript_code(self, tab):
         """
-        ChatGPT 응답을 추출합니다.
+        ChatGPT 응답에서 JavaScript 코드를 추출합니다.
         """
         try:
             js_code = """
             (function() {
                 try {
-                    // 다양한 셀렉터로 응답 메시지 찾기
-                    const selectors = [
-                        '.markdown.prose', 
-                        '.text-message .markdown',
-                        '[data-message-author-role="assistant"] .markdown',
-                        '.agent-turn .markdown',
-                        'article .prose',
-                        '.text-message',
-                        '[data-message-author-role="assistant"]'
-                    ];
+                    // JavaScript 코드 블록 찾기
+                    const jsBlocks = [];
                     
-                    let lastMessage = null;
-                    for (const selector of selectors) {
-                        const elements = document.querySelectorAll(selector);
-                        if (elements.length > 0) {
-                            lastMessage = elements[elements.length - 1];
-                            break;
+                    // 코드 블록 찾기 (```javascript ... ``` 형식)
+                    const codeElements = document.querySelectorAll('pre code.language-javascript');
+                    if (codeElements.length > 0) {
+                        // 마지막 JavaScript 코드 블록 사용
+                        return codeElements[codeElements.length - 1].textContent;
+                    }
+                    
+                    // 일반 코드 블록 확인
+                    const preElements = document.querySelectorAll('pre');
+                    for (const pre of preElements) {
+                        // pre 요소 내부 텍스트 확인
+                        const text = pre.textContent || '';
+                        if (text.includes('async function') || 
+                            text.includes('function(') || 
+                            text.includes('return {') ||
+                            text.includes('document.querySelector')) {
+                            jsBlocks.push(text);
                         }
                     }
                     
-                    if (!lastMessage) return '응답 메시지를 찾을 수 없음';
+                    // JavaScript 코드 블록이 있다면 마지막 것 반환
+                    if (jsBlocks.length > 0) {
+                        return jsBlocks[jsBlocks.length - 1];
+                    }
                     
-                    // 응답에서 코드 블록과 텍스트 모두 추출
-                    let fullContent = '';
-                    
-                    // 코드 블록 처리
-                    const codeBlocks = lastMessage.querySelectorAll('pre code');
-                    if (codeBlocks && codeBlocks.length > 0) {
-                        for (let i = 0; i < codeBlocks.length; i++) {
-                            const codeType = codeBlocks[i].className.includes('language-') ? 
-                                codeBlocks[i].className.replace('language-', '') : '';
-                            fullContent += '```' + codeType + '\\n';
-                            fullContent += codeBlocks[i].textContent + '\\n```\\n\\n';
+                    // Markdown 텍스트에서 코드 블록 찾기
+                    const markdownElements = document.querySelectorAll('.markdown');
+                    if (markdownElements.length > 0) {
+                        const lastMarkdown = markdownElements[markdownElements.length - 1];
+                        const text = lastMarkdown.textContent || '';
+                        
+                        // ```javascript ... ``` 패턴 찾기
+                        const jsRegex = /```(?:javascript|js)([\\s\\S]*?)```/g;
+                        const matches = [];
+                        let match;
+                        
+                        while ((match = jsRegex.exec(text)) !== null) {
+                            matches.push(match[1].trim());
+                        }
+                        
+                        if (matches.length > 0) {
+                            return matches[matches.length - 1];
+                        }
+                        
+                        // 일반 코드 블록 찾기
+                        const codeRegex = /```([\\s\\S]*?)```/g;
+                        const codeMatches = [];
+                        
+                        while ((match = codeRegex.exec(text)) !== null) {
+                            const code = match[1].trim();
+                            if (code.includes('async function') || 
+                                code.includes('function(') || 
+                                code.includes('return {') ||
+                                code.includes('document.querySelector')) {
+                                codeMatches.push(code);
+                            }
+                        }
+                        
+                        if (codeMatches.length > 0) {
+                            return codeMatches[codeMatches.length - 1];
                         }
                     }
                     
-                    // 전체 텍스트 추가
-                    fullContent += lastMessage.textContent;
-                    
-                    return fullContent;
+                    return '';
                 } catch (error) {
-                    console.error('응답 추출 오류:', error);
-                    return '오류: ' + error.toString();
+                    console.error('JavaScript 코드 추출 오류:', error);
+                    return '';
                 }
             })();
             """
             
             result = tab.Runtime.evaluate(expression=js_code)
-            response_text = result.get('result', {}).get('value', "")
-            return response_text
+            code = result.get('result', {}).get('value', "")
+            
+            if code:
+                # JavaScript 코드 유효성 검증
+                if code.startswith('```javascript') and code.endswith('```'):
+                    code = code[13:-3].strip()  # ```javascript와 ``` 제거
+                elif code.startswith('```js') and code.endswith('```'):
+                    code = code[5:-3].strip()  # ```js와 ``` 제거
+                elif code.startswith('```') and code.endswith('```'):
+                    code = code[3:-3].strip()  # ```와 ``` 제거
+                
+                logger.info(f"Found JavaScript code ({len(code)} characters)")
+                return code
+            else:
+                logger.warning("No JavaScript code found")
+                return ""
+            
         except Exception as e:
-            logger.error(f"Error extracting ChatGPT response: {e}")
+            logger.error(f"Error extracting JavaScript code: {e}")
             return ""
 
     def start_browser(self, profile_name="Default", position=(0, 0), size=(1024, 768), pythonpath="./Scripts/python.exe"):
@@ -1093,7 +973,7 @@ JSON 형식만 응답하세요. 다른 텍스트는 모두 제외하세요.
                 logger.info("Enabled Network domain for both tabs")
             
                 # ChatGPT 페이지로 직접 이동
-                url = "https://chatgpt.com/?model=gpt-4o&temporary-chat=false"
+                url = "https://chatgpt.com/?model=gpt-4o-mini&temporary-chat=false"
                 logger.info(f"Navigating to {url}")
                 self.tab.Page.navigate(url=url, _timeout=5)  # 타임아웃 감소 (10초 → 5초)
                 # 페이지 로딩 기다리기
@@ -2331,7 +2211,22 @@ JSON 형식만 응답하세요. 다른 텍스트는 모두 제외하세요.
         try:
             if tab and hasattr(tab, 'id') and tab.id:
                 logger.info(f"Closing tab with ID: {tab.id}")
+                
+                # 먼저 웹소켓 연결 정리
+                try:
+                    # 탭의 소켓 연결 종료 시도
+                    if hasattr(tab, '_ws') and tab._ws:
+                        try:
+                            tab.stop()  # 소켓 루프 중지
+                            time.sleep(0.2)  # 정리를 위한 짧은 대기
+                        except Exception as ws_error:
+                            logger.warning(f"Error stopping tab WebSocket: {ws_error}")
+                except Exception as e:
+                    logger.warning(f"Error cleaning up WebSocket: {e}")
+                
+                # 이후 탭 닫기
                 browser.close_tab(tab)
+                logger.info(f"Tab {tab.id} safely closed")
                 return True
         except Exception as e:
             logger.error(f"Error closing tab: {e}")
@@ -2422,6 +2317,7 @@ JSON 형식만 응답하세요. 다른 텍스트는 모두 제외하세요.
     def test_crawl_functionality(self, analysis_result, url, test_string):
         """
         분석 결과를 바탕으로 실제 크롤링을 테스트합니다.
+        Chrome DevTools Protocol을 통해 브라우저 환경에서 직접 실행합니다.
         
         Args:
             analysis_result: 크롤링 분석 결과 딕셔너리
@@ -2431,6 +2327,7 @@ JSON 형식만 응답하세요. 다른 텍스트는 모두 제외하세요.
         Returns:
             테스트 결과를 담은 딕셔너리
         """
+        test_tab = None
         try:
             logger.info(f"Starting test crawl for URL: {url}")
             logger.info(f"Test string to verify: {test_string}")
@@ -2447,313 +2344,1008 @@ JSON 형식만 응답하세요. 다른 텍스트는 모두 제외하세요.
                 "stderr": None
             }
             
-            # 파이썬 코드 추출
+            # 크롤링 코드 추출 - Python에서 JavaScript로 변환이 필요
             python_code = analysis_result.get('python_code', '')
             if not python_code:
                 test_result["error"] = "No Python code found in analysis results"
                 logger.error(test_result["error"])
                 return test_result
             
-            # 파이썬 코드 준비 - 필요한 import 구문 추가
-            imports_added = []
-            
-            # 1. requests와 BeautifulSoup 임포트 확인 및 추가
-            if "import requests" not in python_code:
-                python_code = "import requests\n" + python_code
-                imports_added.append("requests")
-                
-            if "from bs4 import BeautifulSoup" not in python_code and "BeautifulSoup" in python_code:
-                python_code = "from bs4 import BeautifulSoup\n" + python_code
-                imports_added.append("BeautifulSoup")
-            
-            # 2. 필요한 경우 selenium 임포트 추가
-            if "selenium" in python_code:
-                if "from selenium import webdriver" not in python_code:
-                    python_code = "from selenium import webdriver\n" + python_code
-                    imports_added.append("selenium.webdriver")
-                if "from selenium.webdriver.common.by import By" not in python_code and "By." in python_code:
-                    python_code = "from selenium.webdriver.common.by import By\n" + python_code
-                    imports_added.append("selenium.webdriver.common.by")
-                if "from selenium.webdriver.chrome.options import Options" not in python_code and "Options" in python_code:
-                    python_code = "from selenium.webdriver.chrome.options import Options\n" + python_code
-                    imports_added.append("selenium.webdriver.chrome.options")
-                if "from selenium.webdriver.chrome.service import Service" not in python_code and "Service" in python_code:
-                    python_code = "from selenium.webdriver.chrome.service import Service\n" + python_code
-                    imports_added.append("selenium.webdriver.chrome.service")
-                if "from selenium.webdriver.support.ui import WebDriverWait" not in python_code and "WebDriverWait" in python_code:
-                    python_code = "from selenium.webdriver.support.ui import WebDriverWait\n" + python_code
-                    imports_added.append("selenium.webdriver.support.ui")
-                if "from selenium.webdriver.support import expected_conditions as EC" not in python_code and "expected_conditions" in python_code:
-                    python_code = "from selenium.webdriver.support import expected_conditions as EC\n" + python_code
-                    imports_added.append("selenium.webdriver.support.expected_conditions")
-            
-            # 3. 기타 필요한 라이브러리 추가
-            if ("time.sleep" in python_code or "time." in python_code) and "import time" not in python_code:
-                python_code = "import time\n" + python_code
-                imports_added.append("time")
-                
-            if "json.loads" in python_code and "import json" not in python_code:
-                python_code = "import json\n" + python_code
-                imports_added.append("json")
-                
-            if "re.search" in python_code and "import re" not in python_code:
-                python_code = "import re\n" + python_code
-                imports_added.append("re")
-                
-            if "os.path" in python_code and "import os" not in python_code:
-                python_code = "import os\n" + python_code
-                imports_added.append("os")
-                
-            logger.info(f"Added imports: {', '.join(imports_added)}")
-            
-            # URL 변수가 없으면 추가하거나 수정
-            if "url = " not in python_code:
-                python_code = f"url = '{url}'\n" + python_code
-                logger.info(f"Added URL variable: url = '{url}'")
-            else:
-                # 기존 URL 변수 재정의
-                url_pattern = r"url\s*=\s*['\"].*?['\"]"
-                new_url = f"url = '{url}'"
-                if re.search(url_pattern, python_code):
-                    python_code = re.sub(url_pattern, new_url, python_code)
-                    logger.info(f"Updated URL variable: {new_url}")
-            
-            # 결과 출력 및 저장 코드 추가
-            result_output_code = """
-# 크롤링 결과 저장 코드
-def save_crawl_result(result_data):
-    import json
-    import os
-    
-    # 결과를 문자열로 변환
-    if isinstance(result_data, (list, dict)):
-        try:
-            result_str = json.dumps(result_data, ensure_ascii=False, indent=2)
-        except:
-            result_str = str(result_data)
-    else:
-        result_str = str(result_data)
-    
-    # 결과 저장
-    with open('./tmp/crawl/crawl_result_data.txt', 'w', encoding='utf-8') as f:
-        f.write(result_str)
-    
-    # 성공 여부 반환
-    return True
-
-"""
-            
-            # 메인 함수가 있으면 메인 함수에 결과 저장 코드 추가
-            if "def main" in python_code:
-                # 메인 함수 내에서 결과를 저장하는 코드 추가
-                main_pattern = r"def\s+main\s*\([^)]*\)\s*:"
-                main_match = re.search(main_pattern, python_code)
-                
-                if main_match:
-                    # 메인 함수의 끝을 찾기
-                    main_start = main_match.start()
-                    main_code = python_code[main_start:]
-                    
-                    # 메인 함수 내에서 반환값 확인
-                    return_pattern = r"return\s+([^\n]+)"
-                    return_match = re.search(return_pattern, main_code)
-                    
-                    if return_match:
-                        # 반환문 전에 결과 저장 코드 추가
-                        return_var = return_match.group(1).strip()
-                        save_code = f"\n    # 크롤링 결과 저장\n    save_crawl_result({return_var})\n"
-                        
-                        # 반환문 앞에 코드 삽입
-                        return_pos = main_start + return_match.start()
-                        python_code = python_code[:return_pos] + save_code + python_code[return_pos:]
-                    else:
-                        # 반환문이 없는 경우 함수 끝에 저장 코드 추가
-                        # 함수 끝 찾기 - 들여쓰기가 변경되는 지점
-                        indent_pattern = r"\n(?=\S)"
-                        indent_matches = list(re.finditer(indent_pattern, main_code))
-                        
-                        if indent_matches and len(indent_matches) > 1:
-                            # 함수 끝 위치
-                            func_end = main_start + indent_matches[1].start()
-                            save_code = "\n    # 크롤링 결과 저장\n    save_crawl_result(locals())\n"
-                            python_code = python_code[:func_end] + save_code + python_code[func_end:]
-                        else:
-                            # 함수 끝을 찾을 수 없는 경우 전체 코드 끝에 추가
-                            python_code += "\n    # 크롤링 결과 저장\n    save_crawl_result(locals())\n"
-                
-                # 메인 함수 호출 코드 수정 - 크롤링 결과를 저장하는 부분 추가
-                if "if __name__ == '__main__':" in python_code:
-                    # 기존 __main__ 블록이 있는 경우 수정
-                    main_call_pattern = r"if\s+__name__\s*==\s*['\"]__main__['\"]\s*:(.*?)(?:\n\S|\Z)"
-                    main_call_match = re.search(main_call_pattern, python_code, re.DOTALL)
-                    
-                    if main_call_match:
-                        # __main__ 블록 전체 내용
-                        main_call_code = main_call_match.group(1)
-                        
-                        # main() 호출이 있는지 확인
-                        if "main()" in main_call_code:
-                            # 기존 호출을 결과 저장 코드로 대체
-                            new_main_call = main_call_code.replace("main()", "result = main()\nsave_crawl_result(result)")
-                            python_code = python_code.replace(main_call_code, new_main_call)
-                        else:
-                            # main() 호출이 없는 경우 추가
-                            new_main_call = main_call_code + "\n    result = main()\n    save_crawl_result(result)"
-                            python_code = python_code.replace(main_call_code, new_main_call)
-                else:
-                    # __main__ 블록이 없는 경우 추가
-                    python_code += "\n\nif __name__ == '__main__':\n    result = main()\n    save_crawl_result(result)"
-            else:
-                # 메인 함수가 없는 경우 - 크롤링 결과를 직접 저장하는 코드 추가
-                python_code += "\n\n# 크롤링 결과 저장\nsave_crawl_result(locals().get('result', locals()))"
-            
-            # 결과 저장 함수 추가
-            python_code = result_output_code + python_code
-            
-            # 테스트 코드 파일 저장
-            test_file_path = os.path.join("./tmp/crawl", "test_crawl.py")
-            with open(test_file_path, 'w', encoding='utf-8') as f:
-                f.write(python_code)
-            
-            # 테스트 코드 실행 시간 측정 시작
-            start_time = time.time()
-            
-            # 파이썬 실행 환경 설정
-            env = os.environ.copy()
-            env["PYTHONIOENCODING"] = "utf-8"
-            
-            # 크롤링 코드 실행
-            pythonpath = self.pythonpath if self.pythonpath else "python"
-            logger.info(f"Executing test crawl with Python: {pythonpath}")
-            
-            # 임시 디렉터리 생성 확인
-            if not os.path.exists("./tmp/crawl"):
-                os.makedirs("./tmp/crawl")
-            
-            # 크롤링 코드 실행
-            process = subprocess.Popen(
-                [pythonpath, test_file_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding='utf-8',
-                env=env,
-                cwd="./tmp/crawl"  # 작업 디렉터리 설정
-            )
-            
-            # 타임아웃 설정 (기본 120초)
-            timeout = 120
+            # 새 탭 열기
+            logger.info("Opening new tab for crawl testing")
             try:
-                stdout, stderr = process.communicate(timeout=timeout)
-                test_result["output"] = stdout
-                test_result["stderr"] = stderr
-            except subprocess.TimeoutExpired:
-                process.kill()
-                stdout, stderr = process.communicate()
-                test_result["output"] = stdout
-                test_result["stderr"] = stderr
-                test_result["error"] = f"Crawl execution timed out after {timeout} seconds"
-                logger.error(test_result["error"])
-                test_result["executed_code"] = python_code
-                return test_result
-            
-            # 실행 시간 계산
-            execution_time = time.time() - start_time
-            test_result["time_taken"] = execution_time
-            
-            # 오류 확인
-            if process.returncode != 0:
-                test_result["error"] = f"Crawl execution failed with exit code {process.returncode}"
-                if stderr:
-                    test_result["error"] += f": {stderr}"
-                logger.error(test_result["error"])
-                test_result["executed_code"] = python_code
-                return test_result
-            
-            # 결과 파일 확인
-            result_file_path = os.path.join("./tmp/crawl", "crawl_result_data.txt")
-            crawl_result = None
-            
-            if os.path.exists(result_file_path):
-                logger.info(f"Found crawl result file: {result_file_path}")
-                try:
-                    with open(result_file_path, 'r', encoding='utf-8') as f:
-                        result_str = f.read()
-                        
-                    # JSON 형식으로 파싱 시도
+                test_tab = self.browser.new_tab()
+                test_tab_id = test_tab.id
+                logger.info(f"Created test tab with ID: {test_tab_id}")
+                
+                test_tab.start()
+                test_tab.Network.enable()
+                test_tab.Page.enable()
+                test_tab.Runtime.enable()
+                
+                # 페이지 이동
+                logger.info(f"Navigating to test URL: {url}")
+                test_tab.Page.navigate(url=url)
+                
+                # 페이지 로드 완료 대기
+                logger.info("Waiting for page load to complete")
+                
+                def on_page_load_event(**kwargs):
+                    logger.info("Page load event fired")
+                
+                test_tab.Page.loadEventFired = on_page_load_event
+                
+                # 페이지 로드 대기 (타임아웃 30초)
+                start_time = time.time()
+                load_timeout = 30
+                page_loaded = False
+                
+                while time.time() - start_time < load_timeout:
+                    # 페이지 로드 상태 확인
                     try:
-                        crawl_result = json.loads(result_str)
-                        logger.info("Successfully parsed crawl result as JSON")
-                    except json.JSONDecodeError:
-                        # JSON으로 파싱할 수 없는 경우 원본 문자열 사용
-                        crawl_result = result_str
-                        logger.info("Using raw string as crawl result (not valid JSON)")
-                except Exception as e:
-                    logger.error(f"Error reading result file: {e}")
-                    test_result["error"] = f"Error reading result file: {e}"
-                    crawl_result = None
-            else:
-                logger.warning(f"No crawl result file found at {result_file_path}")
-                # 결과 파일이 없는 경우 stdout 사용
-                crawl_result = stdout
-                logger.info("Using stdout as crawl result")
+                        self.browser.activate_tab(test_tab.id)
+                        result = test_tab.Runtime.evaluate(expression="document.readyState")
+                        ready_state = result.get('result', {}).get('value', '')
+                        
+                        if ready_state == 'complete':
+                            logger.info("Page load complete")
+                            page_loaded = True
+                            break
+                    except Exception as load_error:
+                        logger.warning(f"Error checking page load state: {load_error}")
+                    
+                    time.sleep(1)
+                
+                if not page_loaded:
+                    logger.warning(f"Page load timeout after {load_timeout} seconds")
+                    test_result["error"] = f"Page load timeout after {load_timeout} seconds"
+                    return test_result
+                
+                # 추가 대기 시간 (JavaScript 실행 완료를 위해)
+                time.sleep(3)
+                
+                # 테스트 코드 실행 시간 측정 시작
+                start_time = time.time()
+                
+                # JavaScript 실행 코드 생성
+                js_crawl_code = self._generate_js_crawler_code(python_code, test_string)
+                test_result["executed_code"] = js_crawl_code
+                
+                logger.info("Executing JavaScript crawler code")
+                
+                # JavaScript 코드 실행
+                try:
+                    # 디버깅 정보 로깅
+                    js_lines = js_crawl_code.split("\n")
+                    logger.debug(f"JavaScript code to execute ({len(js_lines)} lines):")
+                    for i, line in enumerate(js_lines[:10]):
+                        logger.debug(f"[{i+1}] {line}")
+                    if len(js_lines) > 10:
+                        logger.debug(f"... (and {len(js_lines) - 10} more lines)")
+                    self.browser.activate_tab(test_tab.id)
+                    js_result = test_tab.Runtime.evaluate(
+                        expression=js_crawl_code,
+                        awaitPromise=True,
+                        timeout=60000  # 60초 타임아웃
+                    )
+                    
+                    # 실행 결과 확인
+                    js_error = js_result.get('exceptionDetails')
+                    if js_error:
+                        error_msg = js_error.get('exception', {}).get('description', 'Unknown JS error')
+                        line_number = js_error.get('lineNumber', -1)
+                        column_number = js_error.get('columnNumber', -1)
+                        
+                        error_detail = f"JavaScript execution error: {error_msg} at line {line_number}:{column_number}"
+                        
+                        # 에러가 발생한 라인 주변 코드 출력
+                        if line_number >= 0 and line_number < len(js_lines):
+                            error_context = "\nError context:\n"
+                            start_line = max(0, line_number - 2)
+                            end_line = min(len(js_lines), line_number + 3)
+                            
+                            for i in range(start_line, end_line):
+                                prefix = ">> " if i == line_number else "   "
+                                error_context += f"{prefix}[{i+1}] {js_lines[i]}\n"
+                            
+                            error_detail += error_context
+                        
+                        test_result["error"] = error_detail
+                        test_result["stderr"] = error_msg
+                        logger.error(error_detail)
+                    else:
+                        # 성공한 경우 결과 추출
+                        result_value = js_result.get('result', {}).get('value')
+                        
+                        if isinstance(result_value, dict):
+                            # 가져온 결과 저장
+                            data = result_value.get('data')
+                            log_messages = result_value.get('log', [])
+                            js_error = result_value.get('error')
+                            
+                            # 로그 출력
+                            for log_msg in log_messages:
+                                logger.info(f"JS Crawler: {log_msg}")
+                            
+                            test_result["data_sample"] = data
+                            test_result["output"] = "\n".join(log_messages) if log_messages else ""
+                            test_result["error"] = js_error
+                            test_result["test_string_found"] = result_value.get('testStringFound', False)
+                            test_result["success"] = not js_error and result_value.get('success', False)
+                            
+                            logger.info(f"JavaScript crawler execution completed with success: {test_result['success']}")
+                            
+                            if test_result["test_string_found"]:
+                                logger.info(f"Test string '{test_string}' was found")
+                            elif test_string:
+                                logger.warning(f"Test string '{test_string}' was NOT found")
+                        else:
+                            # 결과가 예상 형식이 아닌 경우
+                            test_result["data_sample"] = result_value
+                            test_result["success"] = result_value is not None
+                            
+                            # 테스트 문자열 확인
+                            if test_string and result_value:
+                                result_str = str(result_value)
+                                test_result["test_string_found"] = test_string.lower() in result_str.lower()
+                                logger.info(f"Test string found: {test_result['test_string_found']}")
+                            
+                            logger.warning("JavaScript crawler returned unexpected format")
+                
+                except Exception as js_exec_error:
+                    error_msg = str(js_exec_error)
+                    logger.error(f"Error executing JavaScript: {error_msg}")
+                    
+                    test_result["error"] = f"Error executing JavaScript: {error_msg}"
+                    test_result["stderr"] = traceback.format_exc()
+                
+                # 실행 시간 계산
+                execution_time = time.time() - start_time
+                test_result["time_taken"] = execution_time
+                
+                # 탭 정리
+                try:
+                    if test_tab:
+                        logger.info(f"Safely stopping WebSocket connection for tab: {test_tab_id}")
+                        try:
+                            # 먼저 WebSocket 연결 정상 종료
+                            test_tab.stop()
+                            time.sleep(0.5)  # 소켓 정리를 위한 대기
+                        except Exception as ws_error:
+                            logger.warning(f"Error stopping WebSocket: {ws_error}")
+                            
+                        # 탭 닫기
+                        self.browser.close_tab(test_tab_id)
+                        logger.info(f"Closed test tab: {test_tab_id}")
+                        test_tab = None
+                except Exception as close_error:
+                    logger.warning(f"Error closing test tab: {close_error}")
+                    # 강제로 객체 정리
+                    test_tab = None
+            except Exception as tab_error:
+                error_msg = str(tab_error)
+                logger.error(f"Browser tab error: {error_msg}")
+                logger.error(traceback.format_exc())
+                
+                test_result["error"] = f"Browser tab error: {error_msg}"
+                test_result["stderr"] = traceback.format_exc()
             
-            # 결과 샘플 저장
-            if crawl_result is not None:
-                if isinstance(crawl_result, list) and len(crawl_result) > 0:
-                    test_result["data_sample"] = crawl_result[:5] if len(crawl_result) > 5 else crawl_result
-                    logger.info(f"Crawl result is a list with {len(crawl_result)} items")
-                elif isinstance(crawl_result, dict):
-                    test_result["data_sample"] = crawl_result
-                    logger.info(f"Crawl result is a dictionary with {len(crawl_result)} keys")
-                else:
-                    # 문자열인 경우 처리
-                    result_str = str(crawl_result)
-                    test_result["data_sample"] = result_str[:1000] if len(result_str) > 1000 else result_str
-                    logger.info(f"Crawl result is a string of length {len(result_str)}")
-            else:
-                # 결과가 없는 경우 stdout 사용
-                logger.warning("No crawl result found, using stdout")
-                test_result["data_sample"] = stdout[:1000] if stdout and len(stdout) > 1000 else stdout
-            
-            # 테스트 문자열 확인
-            if test_string and crawl_result is not None:
-                result_str = str(crawl_result)
-                test_result["test_string_found"] = test_string.lower() in result_str.lower()
-                logger.info(f"Test string '{test_string}' found: {test_result['test_string_found']}")
-            
-            # 테스트 성공 여부 판단
-            test_result["success"] = (
-                test_result["error"] is None and 
-                test_result["data_sample"] is not None and 
-                (not test_string or test_result["test_string_found"])
-            )
-            
-            # 실행한 코드 저장
-            test_result["executed_code"] = python_code
-            
-            logger.info(f"Test crawl completed in {execution_time:.2f} seconds")
-            logger.info(f"Test result: {'Success' if test_result['success'] else 'Failed'}")
-            
-            # 성공한 경우 데이터 샘플 로깅
+            # 결과 로깅
             if test_result["success"]:
-                logger.info(f"Sample data: {str(test_result['data_sample'])[:200]}...")
+                logger.info(f"Test crawl completed successfully in {test_result['time_taken']:.2f} seconds")
+                if isinstance(test_result["data_sample"], (list, dict)):
+                    logger.info(f"Sample data: {str(test_result['data_sample'][:3]) if isinstance(test_result['data_sample'], list) else str(test_result['data_sample'])[:200]}...")
+            else:
+                logger.warning(f"Test crawl failed: {test_result.get('error', 'Unknown error')}")
             
             return test_result
-            
+        
         except Exception as e:
-            logger.error(f"Error in test_crawl_functionality: {e}")
+            error_msg = str(e)
+            logger.error(f"Error in test_crawl_functionality: {error_msg}")
             logger.error(traceback.format_exc())
+            
+            # 탭 정리 (예외 발생 시에도)
+            if test_tab:
+                try:
+                    # 순차적으로 정리하여 오류 최소화
+                    logger.info(f"Emergency cleanup of tab in exception handler")
+                    try:
+                        # WebSocket 종료
+                        test_tab.stop()
+                        time.sleep(0.5)
+                    except Exception as ws_e:
+                        logger.warning(f"WebSocket stop failed during cleanup: {ws_e}")
+                    
+                    try:
+                        # 탭 닫기
+                        self.browser.close_tab(test_tab.id)
+                    except Exception as close_e:
+                        logger.warning(f"Tab close failed during cleanup: {close_e}")
+                except Exception as e:
+                    logger.warning(f"Complete cleanup failure: {e}")
+                
+                # 강제로 참조 제거
+                test_tab = None
+            
             return {
                 "success": False,
                 "time_taken": 0,
-                "error": str(e),
+                "error": error_msg,
                 "data_sample": None,
                 "test_string_found": False,
-                "executed_code": python_code if 'python_code' in locals() else None,
+                "executed_code": None,
                 "output": None,
                 "stderr": traceback.format_exc()
             }
+    
+    def _convert_python_to_js_crawler(self, python_code, url, test_string):
+        """
+        Python 크롤링 코드를 JavaScript로 변환합니다.
+        
+        Args:
+            python_code: 변환할 Python 코드
+            url: 크롤링할 URL
+            test_string: 테스트할 문자열
+            
+        Returns:
+            JavaScript 크롤링 코드
+        """
+        logger.info("Converting Python crawler code to JavaScript")
+        
+        # BeautifulSoup 관련 코드가 있는지 확인
+        has_bs4 = "BeautifulSoup" in python_code
+        has_requests = "requests." in python_code or "requests.get" in python_code
+        has_selenium = "selenium" in python_code or "webdriver" in python_code
+        
+        # Python 코드에서 주요 패턴 추출
+        selectors = []
+        # CSS 선택자 추출
+        selector_pattern = r'\.(?:find|select|find_all|select_one)\([\'"]([^\'"]+)[\'"]\)'
+        selector_matches = re.findall(selector_pattern, python_code)
+        selectors.extend(selector_matches)
+        
+        # XPath 추출
+        xpath_pattern = r'\.xpath\([\'"]([^\'"]+)[\'"]\)'
+        xpath_matches = re.findall(xpath_pattern, python_code)
+        
+        # 데이터 추출 패턴
+        data_extraction = []
+        # .text 패턴
+        text_pattern = r'\.(?:text|get_text\(\))'
+        if re.search(text_pattern, python_code):
+            data_extraction.append("text")
+            
+        # .get('attribute') 패턴
+        attr_pattern = r'\.get\([\'"]([^\'"]+)[\'"]\)'
+        attr_matches = re.findall(attr_pattern, python_code)
+        for attr in attr_matches:
+            if attr not in ['text', 'content']:
+                data_extraction.append(f"attribute: {attr}")
+        
+        # 페이지 탐색/다음 페이지 패턴
+        has_pagination = "next_page" in python_code or "pagination" in python_code
+        
+        # 특수 처리 패턴 (인피니트 스크롤, 버튼 클릭 등)
+        special_patterns = {
+            "infinite_scroll": "scroll" in python_code,
+            "button_click": "click" in python_code,
+            "wait": "wait" in python_code or "sleep" in python_code,
+            "iframe": "iframe" in python_code,
+            "ajax": "ajax" in python_code or "xhr" in python_code,
+            "json": "json" in python_code,
+        }
+        
+        # 기본 JavaScript 크롤링 코드 생성
+        js_code = f"""
+        (async function() {{
+            try {{
+                console.log("Starting JavaScript crawler test for: {url}");
+                
+                // 테스트 결과 객체
+                const result = {{
+                    success: false,
+                    error: null,
+                    data: null,
+                    log: [],
+                    testStringFound: false
+                }};
+                
+                // 로그 헬퍼 함수
+                function log(message) {{
+                    console.log(message);
+                    result.log.push(message);
+                }}
+                
+                // 현재 URL 기록
+                const currentUrl = window.location.href;
+                log(`Current URL: ${{currentUrl}}`);
+                
+                // 페이지 확인
+                if (!document || !document.body) {{
+                    result.error = "Document or body is not available";
+                    return result;
+                }}
+                
+                // Helper: 요소 대기 함수
+                async function waitForElement(selector, timeout = 5000) {{
+                    const startTime = Date.now();
+                    
+                    while (Date.now() - startTime < timeout) {{
+                        const element = document.querySelector(selector);
+                        if (element) return element;
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    }}
+                    
+                    return null;
+                }}
+                
+                // Helper: 스크롤 함수
+                async function scrollToBottom() {{
+                    return new Promise(resolve => {{
+                        let lastScrollTop = document.documentElement.scrollTop;
+                        
+                        function scroll() {{
+                            window.scrollTo(0, document.documentElement.scrollHeight);
+                            
+                            setTimeout(() => {{
+                                const newScrollTop = document.documentElement.scrollTop;
+                                if (newScrollTop === lastScrollTop) {{
+                                    // 더 이상 스크롤 되지 않음
+                                    resolve();
+                                }} else {{
+                                    lastScrollTop = newScrollTop;
+                                    scroll();
+                                }}
+                            }}, 1000);
+                        }}
+                        
+                        scroll();
+                    }});
+                }}
+                
+                // 데이터 추출 헬퍼
+                function extractData(element, extractionType = "text") {{
+                    if (!element) return null;
+                    
+                    if (extractionType === "text") {{
+                        return element.textContent.trim();
+                    }}
+                    
+                    if (extractionType.startsWith("attribute:")) {{
+                        const attr = extractionType.split(":")[1].trim();
+                        return element.getAttribute(attr);
+                    }}
+                    
+                    return element.textContent.trim();
+                }}
+        """
+        
+        # 선택자 기반 크롤링 코드
+        if selectors:
+            js_code += f"""
+                // 선택자를 사용한 데이터 추출
+                let extractedData = [];
+                log("Starting data extraction with selectors");
+                
+                try {{
+            """
+            
+            # 각 선택자에 대한 코드 추가
+            for i, selector in enumerate(selectors):
+                js_code += f"""
+                    // 선택자 {i+1}: "{selector}"
+                    const elements{i} = document.querySelectorAll("{selector}");
+                    log(`선택자 "{selector}"로 ${{elements{i}.length}}개 요소 발견`);
+                    
+                    if (elements{i}.length > 0) {{
+                        const items{i} = [];
+                        elements{i}.forEach(el => {{
+                            items{i}.push(extractData(el, "text"));
+                        }});
+                        extractedData.push(...items{i});
+                        log(`선택자 {i+1}에서 ${{items{i}.length}}개 데이터 추출`);
+                    }}
+                """
+            
+            js_code += """
+                } catch (extractError) {
+                    log(`데이터 추출 중 오류: ${extractError.message}`);
+                }
+            """
+        
+        # XPath 선택자 처리
+        if xpath_matches:
+            js_code += """
+                // XPath 평가 헬퍼 함수
+                function getElementByXpath(path) {
+                    return document.evaluate(
+                        path, 
+                        document, 
+                        null, 
+                        XPathResult.FIRST_ORDERED_NODE_TYPE, 
+                        null
+                    ).singleNodeValue;
+                }
+                
+                function getElementsByXpath(path) {
+                    const result = document.evaluate(
+                        path, 
+                        document, 
+                        null, 
+                        XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, 
+                        null
+                    );
+                    
+                    const elements = [];
+                    for (let i = 0; i < result.snapshotLength; i++) {
+                        elements.push(result.snapshotItem(i));
+                    }
+                    return elements;
+                }
+            """
+            
+            # 각 XPath에 대한 코드 추가
+            for i, xpath in enumerate(xpath_matches):
+                js_code += f"""
+                    // XPath {i+1}: "{xpath}"
+                    try {{
+                        const xpathElements{i} = getElementsByXpath("{xpath}");
+                        log(`XPath "{xpath}"로 ${{xpathElements{i}.length}}개 요소 발견`);
+                        
+                        if (xpathElements{i}.length > 0) {{
+                            const xpathItems{i} = [];
+                            xpathElements{i}.forEach(el => {{
+                                xpathItems{i}.push(extractData(el, "text"));
+                            }});
+                            extractedData.push(...xpathItems{i});
+                            log(`XPath {i+1}에서 ${{xpathItems{i}.length}}개 데이터 추출`);
+                        }}
+                    }} catch (xpathError) {{
+                        log(`XPath 처리 중 오류: ${{xpathError.message}}`);
+                    }}
+                """
+        
+        # 특수 패턴 처리
+        if special_patterns["infinite_scroll"]:
+            js_code += """
+                // 무한 스크롤 처리
+                log("스크롤 수행 시작");
+                try {
+                    await scrollToBottom();
+                    log("페이지 끝까지 스크롤 완료");
+                    
+                    // 스크롤 후 데이터 다시 추출
+                    const scrollElements = document.querySelectorAll("SELECTOR_PLACEHOLDER");
+                    if (scrollElements.length > extractedData.length) {
+                        log(`스크롤 후 요소 수 증가: ${scrollElements.length}`);
+                        
+                        extractedData = [];
+                        scrollElements.forEach(el => {
+                            extractedData.push(extractData(el, "text"));
+                        });
+                    }
+                } catch (scrollError) {
+                    log(`스크롤 처리 중 오류: ${scrollError.message}`);
+                }
+            """.replace("SELECTOR_PLACEHOLDER", selectors[0] if selectors else "a")
+        
+        if special_patterns["button_click"]:
+            js_code += """
+                // 버튼 클릭 처리
+                log("버튼 클릭 처리 시도");
+                try {
+                    // "더 보기" 버튼 검색
+                    const loadMoreButton = await waitForElement("button:contains('더 보기'), a:contains('더 보기'), button:contains('more'), a:contains('more'), button:contains('load more'), a:contains('load more')");
+                    
+                    if (loadMoreButton) {
+                        log(`버튼 발견: ${loadMoreButton.textContent.trim()}`);
+                        loadMoreButton.click();
+                        log("버튼 클릭 완료");
+                        
+                        // 클릭 후 새 컨텐츠 로딩 대기
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        
+                        // 데이터 다시 추출
+                        const clickElements = document.querySelectorAll("SELECTOR_PLACEHOLDER");
+                        log(`클릭 후 요소 수: ${clickElements.length}`);
+                        
+                        if (clickElements.length > extractedData.length) {
+                            extractedData = [];
+                            clickElements.forEach(el => {
+                                extractedData.push(extractData(el, "text"));
+                            });
+                        }
+                    } else {
+                        log("추가 로드 버튼을 찾지 못함");
+                    }
+                } catch (clickError) {
+                    log(`버튼 클릭 처리 중 오류: ${clickError.message}`);
+                }
+            """.replace("SELECTOR_PLACEHOLDER", selectors[0] if selectors else "a")
+        
+        # 테스트 문자열 검증
+        if test_string:
+            js_code += f"""
+                // 테스트 문자열 확인: "{test_string}"
+                try {{
+                    const pageContent = document.body.textContent;
+                    result.testStringFound = pageContent.toLowerCase().includes("{test_string.lower()}");
+                    log(`테스트 문자열 발견: ${{result.testStringFound}}`);
+                    
+                    // 추출된 데이터에서도 확인
+                    if (!result.testStringFound && extractedData.length > 0) {{
+                        const dataContent = JSON.stringify(extractedData);
+                        result.testStringFound = dataContent.toLowerCase().includes("{test_string.lower()}");
+                        log(`추출 데이터에서 테스트 문자열 발견: ${{result.testStringFound}}`);
+                    }}
+                }} catch (testStringError) {{
+                    log(`테스트 문자열 확인 중 오류: ${{testStringError.message}}`);
+                }}
+            """
+        
+        # 결과 마무리
+        js_code += """
+                // 결과 설정
+                result.data = extractedData;
+                result.success = extractedData && extractedData.length > 0;
+                log(`추출 완료: ${extractedData ? extractedData.length : 0}개 데이터`);
+                
+                return result;
+            } catch (error) {
+                return {
+                    success: false,
+                    error: `JavaScript crawler error: ${error.message}`,
+                    data: null,
+                    log: [`Fatal error: ${error.message}`],
+                    testStringFound: false
+                };
+            }
+        })();
+        """
+        
+        return js_code
+
+    def _generate_js_crawler_code(self, python_code, test_string):
+        """
+        Python 크롤링 코드를 분석하여 브라우저 환경에서 실행할 JavaScript 코드를 생성합니다.
+        
+        Args:
+            python_code: 파이썬 크롤링 코드
+            test_string: 테스트할 문자열
+            
+        Returns:
+            JavaScript 코드
+        """
+        logger.info("Generating JavaScript crawler code from Python code")
+        
+        # Python 코드 분석하여 중요 패턴 찾기
+        selectors = []
+        data_targets = []
+        
+        # BeautifulSoup 선택자 패턴 추출
+        bs4_patterns = {
+            'find': r'\.find\([\'"]([^\'"]+)[\'"]',
+            'find_all': r'\.find_all\([\'"]([^\'"]+)[\'"]',
+            'select': r'\.select\([\'"]([^\'"]+)[\'"]',
+            'select_one': r'\.select_one\([\'"]([^\'"]+)[\'"]'
+        }
+        
+        for pattern_name, pattern in bs4_patterns.items():
+            matches = re.findall(pattern, python_code)
+            for match in matches:
+                selectors.append(match)
+                logger.info(f"Found {pattern_name} selector: {match}")
+        
+        # Selenium 선택자 패턴
+        selenium_patterns = {
+            'find_element_by_css': r'\.find_element_by_css_selector\([\'"]([^\'"]+)[\'"]',
+            'find_elements_by_css': r'\.find_elements_by_css_selector\([\'"]([^\'"]+)[\'"]',
+            'css_selector': r'\.find_element\(By\.CSS_SELECTOR,\s*[\'"]([^\'"]+)[\'"]',
+            'css_selectors': r'\.find_elements\(By\.CSS_SELECTOR,\s*[\'"]([^\'"]+)[\'"]'
+        }
+        
+        for pattern_name, pattern in selenium_patterns.items():
+            matches = re.findall(pattern, python_code)
+            for match in matches:
+                selectors.append(match)
+                logger.info(f"Found {pattern_name} selector: {match}")
+        
+        # XPath 패턴
+        xpath_patterns = {
+            'find_element_by_xpath': r'\.find_element_by_xpath\([\'"]([^\'"]+)[\'"]',
+            'find_elements_by_xpath': r'\.find_elements_by_xpath\([\'"]([^\'"]+)[\'"]',
+            'xpath': r'\.find_element\(By\.XPATH,\s*[\'"]([^\'"]+)[\'"]',
+            'xpaths': r'\.find_elements\(By\.XPATH,\s*[\'"]([^\'"]+)[\'"]',
+            'bs4_xpath': r'\.xpath\([\'"]([^\'"]+)[\'"]'
+        }
+        
+        xpath_selectors = []
+        for pattern_name, pattern in xpath_patterns.items():
+            matches = re.findall(pattern, python_code)
+            for match in matches:
+                xpath_selectors.append(match)
+                logger.info(f"Found {pattern_name} selector: {match}")
+        
+        # 데이터 추출 패턴
+        data_patterns = {
+            'text': r'\.text',
+            'get_text': r'\.get_text\(\)',
+            'string': r'\.string',
+            'inner_text': r'\.get_attribute\([\'"]innerText[\'"]\)',
+            'inner_html': r'\.get_attribute\([\'"]innerHTML[\'"]\)',
+            'attribute': r'\.get_attribute\([\'"]([^\'"]+)[\'"]\)',
+            'attr': r'\.attr\([\'"]([^\'"]+)[\'"]\)',
+            'href': r'\.get\([\'"]href[\'"]\)'
+        }
+        
+        for pattern_name, pattern in data_patterns.items():
+            if re.search(pattern, python_code):
+                if pattern_name in ['attribute', 'attr']:
+                    matches = re.findall(pattern, python_code)
+                    for match in matches:
+                        data_targets.append(f'attribute:{match}')
+                        logger.info(f"Found data target: attribute {match}")
+                else:
+                    data_targets.append(pattern_name)
+                    logger.info(f"Found data target: {pattern_name}")
+        
+        # 특별 처리 패턴 확인
+        special_actions = {
+            'scroll': 'scroll' in python_code or 'SCROLL' in python_code,
+            'infinite_scroll': 'infinite_scroll' in python_code or 'scroll_down' in python_code,
+            'click': 'click()' in python_code or '.click(' in python_code,
+            'load_more': 'load_more' in python_code or 'show_more' in python_code,
+            'pagination': 'pagination' in python_code or 'next_page' in python_code,
+            'wait': 'wait' in python_code or 'sleep' in python_code or 'time.sleep' in python_code,
+            'iframe': 'iframe' in python_code or 'switch_to.frame' in python_code,
+            'json': 'json' in python_code or 'JSON' in python_code
+        }
+        
+        # 셀렉터 없거나 제한된 경우 기본 셀렉터 추가
+        if not selectors and not xpath_selectors:
+            # HTML에서 의미 있는 요소 선택
+            default_selectors = [
+                'div.content', 'article', 'section', 'main', 'table', 
+                'ul li', '.item', '.product', '.article', '.post',
+                '.content', '.result', 'div[id*="content"]', 'div[class*="content"]'
+            ]
+            selectors = default_selectors
+            logger.info("No explicit selectors found, using default selectors")
+        
+        # 데이터 타겟이 없는 경우 기본값 설정
+        if not data_targets:
+            data_targets = ['text']
+            logger.info("No explicit data targets found, using 'text' as default")
+        
+        # JavaScript 크롤링 코드 생성
+        js_code = f"""
+        (async function() {{
+            try {{
+                console.log("Starting JavaScript crawler test");
+                
+                // 테스트 결과
+                const result = {{
+                    success: false,
+                    error: null,
+                    data: null,
+                    log: [],
+                    testStringFound: false
+                }};
+                
+                // 로그 헬퍼 함수
+                function log(message) {{
+                    console.log(message);
+                    result.log.push(message);
+                }}
+                
+                log("Current URL: " + window.location.href);
+                
+                // Helper 함수: 요소에서 데이터 추출
+                function extractData(element, method = "text") {{
+                    if (!element) return null;
+                    
+                    if (method === "text" || method === "get_text" || method === "string") {{
+                        return element.textContent.trim();
+                    }}
+                    else if (method === "inner_text") {{
+                        return element.innerText.trim();
+                    }}
+                    else if (method === "inner_html") {{
+                        return element.innerHTML.trim();
+                    }}
+                    else if (method.startsWith("attribute:")) {{
+                        const attr = method.split(":")[1];
+                        return element.getAttribute(attr);
+                    }}
+                    else if (method === "href") {{
+                        return element.href || element.getAttribute("href");
+                    }}
+                    
+                    // 기본적으로 텍스트 반환
+                    return element.textContent.trim();
+                }}
+                
+                // XPath 선택자 도우미 함수
+                function getElementByXpath(xpath) {{
+                    return document.evaluate(
+                        xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
+                    ).singleNodeValue;
+                }}
+                
+                function getElementsByXpath(xpath) {{
+                    const result = document.evaluate(
+                        xpath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null
+                    );
+                    
+                    const elements = [];
+                    for (let i = 0; i < result.snapshotLength; i++) {{
+                        elements.push(result.snapshotItem(i));
+                    }}
+                    return elements;
+                }}
+                
+                // 스크롤 도우미 함수
+                async function scrollDown(scrollCount = 3) {{
+                    log("Scrolling down the page...");
+                    
+                    for (let i = 0; i < scrollCount; i++) {{
+                        window.scrollTo(0, document.body.scrollHeight);
+                        log(`Scroll ${i+1}/${scrollCount}`);
+                        
+                        // 스크롤 후 대기
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    }}
+                    
+                    // 페이지 맨 위로 다시 스크롤
+                    window.scrollTo(0, 0);
+                    log("Scrolled back to top");
+                }}
+                
+                // 무한 스크롤 처리
+                async function handleInfiniteScroll() {{
+                    log("Handling potential infinite scroll...");
+                    
+                    const initialHeight = document.body.scrollHeight;
+                    let lastHeight = initialHeight;
+                    let scrollCount = 0;
+                    const maxScrolls = 5;  // 최대 스크롤 횟수 제한
+                    
+                    while (scrollCount < maxScrolls) {{
+                        // 페이지 끝까지 스크롤
+                        window.scrollTo(0, document.body.scrollHeight);
+                        await new Promise(resolve => setTimeout(resolve, 1500));
+                        
+                        const currentHeight = document.body.scrollHeight;
+                        scrollCount++;
+                        
+                        log(`Scroll ${scrollCount}/${maxScrolls}: Height changed from ${lastHeight} to ${currentHeight}`);
+                        
+                        // 더 이상 높이가 변하지 않으면 종료
+                        if (currentHeight === lastHeight) {{
+                            log("Page height didn't change, stopping scroll");
+                            break;
+                        }}
+                        
+                        lastHeight = currentHeight;
+                    }}
+                    
+                    // 결과 리포트
+                    const heightDiff = lastHeight - initialHeight;
+                    log(`Total height change: ${heightDiff}px after ${scrollCount} scrolls`);
+                    
+                    // 페이지 맨 위로 다시 스크롤
+                    window.scrollTo(0, 0);
+                    log("Scrolled back to top after infinite scroll");
+                    
+                    return heightDiff > 0;  // 높이가 변했으면 true
+                }}
+                
+                // 버튼 클릭 처리
+                async function handleButtonClick() {{
+                    log("Looking for 'load more' buttons...");
+                    
+                    // 다양한 "더 보기" 유형의 버튼 찾기
+                    const buttonSelectors = [
+                        'button:contains("더 보기")', 'a:contains("더 보기")',
+                        'button:contains("더보기")', 'a:contains("더보기")',
+                        'button:contains("load more")', 'a:contains("load more")',
+                        'button:contains("Load More")', 'a:contains("Load More")',
+                        'button:contains("show more")', 'a:contains("show more")',
+                        'button:contains("View More")', 'a:contains("View More")',
+                        'button.more', 'a.more', '.btn-more', '.more-btn',
+                        'button[class*="more"]', 'a[class*="more"]'
+                    ];
+                    
+                    // 가시적인 모든 버튼 요소 가져오기
+                    const allButtons = Array.from(document.querySelectorAll('button, a.btn, a[role="button"], .button, [class*="btn"]'));
+                    
+                    // 텍스트로 "더 보기" 유형 버튼 필터링
+                    const moreButtons = allButtons.filter(btn => {{
+                        const text = btn.textContent.toLowerCase().trim();
+                        return text.includes('more') || text.includes('load') || text.includes('show') || 
+                               text.includes('보기') || text.includes('더보기') || text.includes('더 보기');
+                    }});
+                    
+                    let clickedAny = false;
+                    
+                    // 발견된 버튼 클릭
+                    if (moreButtons.length > 0) {{
+                        log(`Found ${moreButtons.length} 'load more' type buttons`);
+                        
+                        for (let btnIndex = 0; btnIndex < Math.min(moreButtons.length, 2); btnIndex++) {{
+                            const btn = moreButtons[btnIndex];
+                            log(`Clicking button ${btnIndex+1}: "${btn.textContent.trim()}"`);
+                            
+                            try {{
+                                btn.click();
+                                clickedAny = true;
+                                
+                                // 컨텐츠 로딩 대기
+                                await new Promise(resolve => setTimeout(resolve, 2000));
+                                log(`Waited after button ${btnIndex+1} click`);
+                            }} catch (clickError) {{
+                                log(`Error clicking button ${btnIndex+1}: ${clickError.message}`);
+                            }}
+                        }}
+                    }} else {{
+                        log("No 'load more' buttons found");
+                    }}
+                    
+                    return clickedAny;
+                }}
+                
+                // 메인 크롤링 수행
+                let extractedData = [];
+                
+                // 특수 작업 먼저 처리 (스크롤, 클릭 등)
+        """
+        
+        # 특별 처리 코드 추가
+        if special_actions['scroll'] or special_actions['infinite_scroll']:
+            if special_actions['infinite_scroll']:
+                js_code += """
+                // 무한 스크롤 처리
+                log("Processing infinite scroll");
+                const scrollResult = await handleInfiniteScroll();
+                log(`Infinite scroll processed: ${scrollResult ? "content loaded" : "no changes"}`);
+                """
+            else:
+                js_code += """
+                // 기본 스크롤 처리
+                log("Processing basic scroll");
+                await scrollDown(3);
+                log("Basic scroll completed");
+                """
+        
+        if special_actions['click'] or special_actions['load_more']:
+            js_code += """
+                // 더보기 버튼 클릭 처리
+                log("Processing button clicks");
+                const clickResult = await handleButtonClick();
+                log(`Button click processed: ${clickResult ? "buttons clicked" : "no buttons clicked"}`);
+                """
+        
+        if special_actions['wait']:
+            js_code += """
+                // 페이지 안정화를 위한 추가 대기
+                log("Waiting for page to stabilize");
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                log("Wait completed");
+                """
+        
+        # 셀렉터 기반 크롤링 코드 추가
+        js_code += """
+                // CSS 셀렉터 기반 크롤링
+                log("Starting data extraction with CSS selectors");
+                """
+        
+        # 각 CSS 셀렉터에 대한 코드 추가
+        for i, selector in enumerate(selectors):
+            js_code += f"""
+                try {{
+                    const elements_{i} = document.querySelectorAll("{selector}");
+                    log(`Selector {i+1} "{selector}": found ${{elements_{i}.length}} elements`);
+                    
+                    if (elements_{i}.length > 0) {{
+                        // 데이터 추출
+                        Array.from(elements_{i}).forEach(element => {{
+                            """
+            
+            # 데이터 추출 코드
+            for j, data_target in enumerate(data_targets):
+                js_code += f"""
+                        const data_{i}_{j} = extractData(element, "{data_target}");
+                        if (data_{i}_{j} && data_{i}_{j}.trim() !== "") {{
+                            extractedData.push(data_{i}_{j});
+                        }}
+                        """
+            
+            js_code += """
+                    });
+                } catch (err) {
+                    log(`Error processing selector: ${err.message}`);
+                }
+                """
+        
+        # XPath 셀렉터 처리
+        if xpath_selectors:
+            js_code += """
+                // XPath 기반 크롤링
+                log("Starting data extraction with XPath");
+                """
+            
+            for i, xpath in enumerate(xpath_selectors):
+                js_code += f"""
+                try {{
+                    const xpathElements_{i} = getElementsByXpath("{xpath}");
+                    log(`XPath {i+1} "{xpath}": found ${{xpathElements_{i}.length}} elements`);
+                    
+                    if (xpathElements_{i}.length > 0) {{
+                        xpathElements_{i}.forEach(element => {{
+                            """
+                
+                # 데이터 추출 코드
+                for j, data_target in enumerate(data_targets):
+                    js_code += f"""
+                            const xpathData_{i}_{j} = extractData(element, "{data_target}");
+                            if (xpathData_{i}_{j} && xpathData_{i}_{j}.trim() !== "") {{
+                                extractedData.push(xpathData_{i}_{j});
+                            }}
+                            """
+                
+                js_code += """
+                        });
+                    }
+                } catch (err) {
+                    log(`Error processing XPath: ${err.message}`);
+                }
+                """
+        
+        # 테스트 문자열 확인 코드
+        if test_string:
+            js_code += f"""
+                // 테스트 문자열 확인
+                log("Checking for test string: '{test_string}'");
+                
+                // 1. 페이지 전체 텍스트에서 확인
+                const pageContent = document.body.textContent || "";
+                const testStringInPage = pageContent.toLowerCase().includes("{test_string.lower()}");
+                log(`Test string in page content: ${{testStringInPage}}`);
+                
+                // 2. 추출된 데이터에서 확인
+                let testStringInData = false;
+                if (extractedData.length > 0) {{
+                    const dataString = JSON.stringify(extractedData).toLowerCase();
+                    testStringInData = dataString.includes("{test_string.lower()}");
+                    log(`Test string in extracted data: ${{testStringInData}}`);
+                }}
+                
+                result.testStringFound = testStringInPage || testStringInData;
+            """
+        
+        # 결과 마무리
+        js_code += """
+                // 최종 결과 준비
+                result.data = extractedData;
+                result.success = extractedData.length > 0;
+                log(`Crawling completed with ${extractedData.length} items extracted`);
+                
+                return result;
+            } catch (error) {
+                console.error("JavaScript crawler error:", error);
+                return {
+                    success: false,
+                    error: `JavaScript crawler error: ${error.message}`,
+                    data: null,
+                    log: [`Fatal error: ${error.message}`],
+                    testStringFound: false
+                };
+            }
+        })();
+        """
+        
+        return js_code
 
 if __name__ == "__main__":
     os.chdir("d:")

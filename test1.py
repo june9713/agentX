@@ -8,12 +8,17 @@ import sys
 
 
 if __name__ == "__main__":
+    import glob
+    import os
+    removal_files = glob.glob("./tmp/crawl/*.*")
+    for file in removal_files:
+        os.remove(file)
     try:
         print("Creating ChromeCDPClient...")
         ccc = ChromeCDPClient()
         print("ChromeCDPClient created successfully")
         print("Starting analysis...")
-        ccc.analisys_crawl_page(ccc.browser, "https://www.youtube.com/watch?v=o7wf2b2CRc4", "유튜브 영상의 요약을 크롤링하세요" , "https://www.youtube.com/watch?v=CfC0rnfGKJg")
+        ccc.analisys_crawl_page(ccc.browser, "https://translate.google.co.kr/?sl=en&tl=ko&op=translate", "구글번역이 어떻게 음성을 실시간으로 처리하는지 크롤링하세요" , "https://translate.google.co.kr/?sl=en&tl=ko&op=translate")
         print("Analysis complete")
     except Exception as e:
         print(f"Error: {e}")
