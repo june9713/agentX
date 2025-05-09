@@ -2071,36 +2071,38 @@ The code must be written in the following format:
 
     def cmd_session_main(self):
         """
-        Main function for CMD session
+        Main method for command session.
+        Accepts user input for commands and executes them.
         """
         try:
-            # Get user input
-            print("Input query?")
-            user_query = input("Enter a query for CMD task: ")
+            print("\n=== Command Session Started ===")
+            print("Type 'exit' to end the session")
             
-            # Check if browser is already started, only verify page load
-            if not self.tab:
-                logger.error("No main tab available")
-                return
+            while True:
+                # Get user input
+                command = input("\nEnter command (or 'exit' to quit): ").strip()
                 
-            # Check page load
-            if not self.check_page_loaded(self.tab, timeout=15):
-                logger.error("Page load check failed")
-                return
+                if command.lower() == 'exit':
+                    print("Ending command session...")
+                    break
+                    
+                if not command:
+                    continue
+                    
+                print(f"\nExecuting command: {command}")
                 
-            # Execute CMD session
-            result = self.execute_chatgpt_cmd_session(self.browser, self.tab, self.tab2, user_query)
-            
-            # Output results
-            print("\n--- Task result ---")
-            print(result)
-            
+                # Execute the command
+                try:
+                    self.execute_chatgpt_cmd_session(self.browser, self.tab, self.tab2, command)
+                except Exception as e:
+                    print(f"Error executing command: {e}")
+                    print(traceback.format_exc())
+                    
         except Exception as e:
-            logger.error(f"Unexpected error in CMD session: {e}")
-            logger.error(traceback.format_exc())
+            print(f"Error in command session: {e}")
+            print(traceback.format_exc())
         finally:
-            # Safely cleanup tabs (don't close browser)
-            logger.info("CMD session completed, cleaning up tabs")
+            print("\n=== Command Session Ended ===")
 
     def newmain(self):
         try:
