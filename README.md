@@ -1,24 +1,59 @@
-# AgentX - Web Automation and Analysis Tool
+# AgentX - LLM-Powered Browser Automation Agent 🤖
 
-AgentX is a powerful web automation and analysis tool that leverages Chrome DevTools Protocol (CDP) to interact with web pages, analyze their structure, and automate various tasks. It's particularly useful for web scraping, automated testing, and real-time web interaction.
+[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/yourusername/agentX?style=social)](https://github.com/yourusername/agentX)
 
-## Features
+> Transform your browser into an intelligent agent powered by Large Language Models (LLMs) 🚀
 
-- Chrome DevTools Protocol (CDP) integration
-- Real-time web page analysis and crawling
-- JavaScript code extraction and analysis
-- Automated browser control and window management
-- Screenshot capture and image processing
-- WebSocket-based communication
+## 🌟 Why AgentX?
+
+AgentX revolutionizes browser automation by combining the power of Large Language Models with Chrome DevTools Protocol. Unlike traditional automation tools, AgentX understands natural language commands and can perform complex web interactions with human-like intelligence.
+
+### Key Advantages
+
+- 🤖 **LLM-Powered Intelligence**: Natural language understanding for complex tasks
+- 🔄 **Real-time Interaction**: Dynamic web page analysis and response
+- 🧠 **Contextual Awareness**: Maintains conversation context for better task execution
+- 🛠️ **Extensible Architecture**: Easy to integrate with various LLM providers
+- 📊 **Comprehensive Analysis**: Deep insights into web page structure and behavior
+
+## ✨ Features
+
+### 1. Intelligent Browser Control
+- Natural language command processing
+- Context-aware web navigation
+- Dynamic element interaction
+- Smart form filling and submission
+
+### 2. Advanced Web Analysis
+- Real-time page structure analysis
+- JavaScript code extraction and understanding
+- Dynamic content detection
+- Automated testing capabilities
+
+### 3. LLM Integration
+- ChatGPT-powered command interpretation
+- Intelligent task planning
+- Natural language response generation
+- Contextual error handling
+
+### 4. Developer Tools
 - Comprehensive logging system
+- Debug mode for development
+- Performance optimization
+- Error tracking and reporting
 
-## Prerequisites
+## 🚀 Getting Started
+
+### Prerequisites
 
 - Python 3.8 or higher
 - Chrome or Slimjet browser
-- Windows operating system (for window management features)
+- Windows operating system
+- OpenAI API key (for ChatGPT integration)
 
-## Installation
+### Installation
 
 1. Clone the repository:
 ```bash
@@ -37,27 +72,15 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
-## Project Structure
-
-```
-agentX/
-├── src/                    # Main source code directory
-│   ├── crawlers/          # Crawling-related code
-│   ├── js/                # JavaScript-related code
-│   ├── mcp/               # MCP-related code
-│   └── agents/            # Agent-related code
-├── tests/                 # Test code
-├── docs/                  # Documentation
-├── examples/              # Example code
-├── config/                # Configuration files
-└── logs/                  # Log files
+4. Configure your environment:
+```bash
+cp .env.example .env
+# Edit .env with your API keys and settings
 ```
 
-## Usage
+## 💡 Usage Examples
 
-### Basic Usage with test1.py
-
-The `test1.py` script demonstrates basic usage of the ChromeCDPClient for web page analysis:
+### 1. Basic Web Analysis
 
 ```python
 from agents.chatgpt.chrome_cdp_client import ChromeCDPClient
@@ -71,18 +94,16 @@ ccc = ChromeCDPClient(
     pythonpath="./Scripts/python.exe"
 )
 
-# Analyze a webpage
+# Analyze a webpage with natural language
 ccc.analisys_crawl_page(
     ccc.browser,
     "https://translate.google.co.kr/?sl=en&tl=ko&op=translate",
-    "Please crawl how Google Translate processes voice in real-time",
+    "Please analyze how Google Translate processes voice in real-time",
     "https://translate.google.co.kr/?sl=en&tl=ko&op=translate"
 )
 ```
 
-### Interactive Command Session with test2.py
-
-The `test2.py` script demonstrates how to use the interactive command session feature:
+### 2. Interactive Command Session
 
 ```python
 from agents.chatgpt.chrome_cdp_client import ChromeCDPClient
@@ -100,55 +121,67 @@ ccc = ChromeCDPClient(
 ccc.cmd_session_main()
 ```
 
-The command session provides an interactive interface where you can:
-- Enter commands to be executed
-- Get real-time feedback on command execution
-- Type 'exit' to end the session
-- View detailed error messages if commands fail
+Try these example commands:
+- "Analyze the current page structure and identify dynamic elements"
+- "Extract all JavaScript code and explain its functionality"
+- "Monitor network requests and identify API endpoints"
+- "Take a screenshot and analyze the visual elements"
 
-Example commands you can try:
-- "Show me the current page structure"
-- "Extract all JavaScript code from this page"
-- "Analyze the page for dynamic content"
-- "Take a screenshot of the current view"
+## 🏗️ Architecture
 
-### Key Components
+### Core Components
 
-1. **ChromeCDPClient**: Main class for browser interaction
+1. **LLM Integration Layer**
+   - Natural language processing
+   - Command interpretation
+   - Response generation
+   - Context management
+
+2. **Browser Control Layer**
+   - Chrome DevTools Protocol integration
    - Window management
-   - Screenshot capture
-   - Page analysis
-   - JavaScript extraction
+   - Tab control
+   - Page interaction
 
-2. **Browser Control**
-   - Start/stop browser
-   - Tab management
-   - Page navigation
-   - Element interaction
+3. **Analysis Engine**
+   - HTML parsing
+   - JavaScript analysis
+   - Network monitoring
+   - Performance tracking
 
-3. **Analysis Features**
-   - HTML source analysis
-   - JavaScript code extraction
-   - Real-time page monitoring
-   - Automated testing
+4. **Task Execution Engine**
+   - Command queue management
+   - Error handling
+   - State management
+   - Result processing
 
-## Configuration
+## 🔧 Configuration
 
-The tool can be configured through various parameters:
+### Environment Variables
+```env
+OPENAI_API_KEY=your_api_key
+BROWSER_PATH=path_to_browser
+DEFAULT_PROFILE=profile_name
+LOG_LEVEL=INFO
+```
 
-- `browser_path`: Path to the browser executable
-- `profile_name`: Browser profile to use
-- `position`: Window position (x, y)
-- `size`: Window size (width, height)
-- `pythonpath`: Path to Python executable
+### Browser Settings
+- Window position and size
+- Profile selection
+- Performance options
+- Debug mode
 
-## Logging
+## 📊 Performance
 
-Logs are stored in the `logs` directory:
-- `myagent.log`: Main application log
-- Debug logs for specific operations
+AgentX is optimized for:
+- Fast response times
+- Low memory usage
+- Efficient resource management
+- Reliable task execution
 
-## Contributing
+## 🤝 Contributing
+
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
 
 1. Fork the repository
 2. Create a feature branch
@@ -156,12 +189,53 @@ Logs are stored in the `logs` directory:
 4. Push to the branch
 5. Create a Pull Request
 
-## License
+## 📝 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0) with additional attribution requirements.
 
-## Acknowledgments
+### Key License Terms
 
-- Chrome DevTools Protocol
-- PyChrome library
-- OpenCV for image processing 
+1. **Commercial Use**
+   - Commercial use is permitted but requires prior notification to the original author
+   - Must include project details, use case, and timeline
+   - Attribution must be prominently displayed
+
+2. **Attribution Requirements**
+   - Original author's name and repository link must be displayed
+   - License information must be included in documentation and UI
+   - Source code headers must contain attribution
+
+3. **Modifications**
+   - Modifications must be clearly marked
+   - Modified versions must include change log
+   - Original license and attribution requirements must be preserved
+
+4. **Distribution**
+   - All distributions must include original LICENSE file
+   - Additional attribution requirements must be included
+   - Original copyright notice must be preserved
+
+For detailed license terms and commercial use inquiries, please see the [LICENSE](LICENSE) file or contact the author.
+
+## 🙏 Acknowledgments
+
+- [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/)
+- [OpenAI](https://openai.com/) for ChatGPT API
+- [PyChrome](https://github.com/fate0/pychrome) library
+- [OpenCV](https://opencv.org/) for image processing
+
+## 🌟 Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=yourusername/agentX&type=Date)](https://star-history.com/#yourusername/agentX&Date)
+
+## 📞 Support
+
+- [GitHub Issues](https://github.com/yourusername/agentX/issues)
+- [Discord Community](https://discord.gg/yourdiscord)
+- [Documentation](https://docs.agentx.dev)
+
+---
+
+Made with ❤️ by [Your Name](https://github.com/yourusername)
+
+[![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/yourusername) 
