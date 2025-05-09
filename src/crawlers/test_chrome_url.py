@@ -2,15 +2,15 @@ import websocket
 import json
 
 try:
-    # WebSocket 연결 시도
+    # Try to connect to WebSocket
     ws = websocket.create_connection("ws://127.0.0.1:8000")
-    print("WebSocket 연결 성공!")
+    print("WebSocket connection successful!")
     
-    # 기본 핑 메시지 전송
+    # Send default ping message
     ws.send(json.dumps({"type": "ping"}))
     result = ws.recv()
-    print(f"받은 응답: {result}")
+    print(f"Received response: {result}")
     
     ws.close()
 except Exception as e:
-    print(f"WebSocket 연결 실패: {e}")
+    print(f"WebSocket connection failed: {e}")

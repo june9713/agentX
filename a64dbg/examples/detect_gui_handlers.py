@@ -25,11 +25,11 @@ def main():
     target = sys.argv[1]
     
     try:
-        print(f"[*] 프로세스에 연결 중: {target}")
+        print(f"[*] connecting to process: {target}")
         controller = FridaController(target)
         
-        # 콜백 함수 정의
-        gui_utils = GuiElementUtils(None)  # 임시로 초기화
+        # define callback function
+        gui_utils = GuiElementUtils(None)  # temporarily initialize
         
         def message_handler(message, data):
             if message['type'] == 'send':
@@ -37,115 +37,115 @@ def main():
                 if isinstance(payload, dict) and payload.get('hook') == 'GuiElement':
                     gui_utils.event_handler(message, data)
                 else:
-                    # 다른 메시지는 기본 핸들러로 전달
+                    # pass other messages to the default handler
                     controller._on_message(message, data)
         
-        # 스크립트에 메시지 핸들러 설정
+        # set message handler for script
         def run_with_custom_handler():
-            # 로컬 장치의 Frida 인스턴스 사용
+            # use local Frida instance
             device = controller.device = frida.get_local_device()
             
             try:
-                # 프로세스 연결
+                # connect to process
                 if controller.spawn:
                     pid = device.spawn([controller.target])
                     controller.session = device.attach(pid)
-                    print(f"[+] 프로세스 생성 및 연결 완료 (PID: {pid})")
+                    print(f"[+] process created and connected (PID: {pid})")
                 else:
                     try:
                         pid = int(controller.target)
                         controller.session = device.attach(pid)
                     except ValueError:
                         controller.session = device.attach(controller.target)
-                    print(f"[+] 프로세스 연결 완료: {controller.target}")
+                    print(f"[+] process connected: {controller.target}")
                 
-                # 후킹 스크립트 로드
+                # load hooking script
                 script_code = controller._build_script()
                 controller.script = controller.session.create_script(script_code)
                 
-                # GUI 유틸리티에 스크립트 설정
+                # set script to GUI utility
                 gui_utils.script = controller.script
                 
-                # 커스텀 메시지 핸들러 설정
+                # set custom message handler
                 controller.script.on('message', message_handler)
                 controller.script.load()
                 
                 if controller.spawn:
                     device.resume(pid)
                 
-                print("[+] 스크립트 로드 완료")
+                print("[+] script loaded")
                 return True
             except Exception as e:
-                print(f"[!] 오류 발생: {e}")
+                print(f"[!] error occurred: {e}")
                 return False
         
-        # 커스텀 핸들러로 실행
+        # run with custom handler
         if not run_with_custom_handler():
             sys.exit(1)
         
-        # 주요 GUI 요소 핸들러 찾기 워크플로우
-        print("\n=== GUI 요소 핸들러 찾기 ===")
-        print("1. 시스템의 모든 윈도우를 스캔합니다.")
+        # find main GUI element handlers
+        print("\n=== find main GUI element handlers ===")
+        print("1. scan all windows in the system")
         gui_utils.scan_all_windows()
         time.sleep(1)
         
-        # 윈도우 목록 출력
+        # print window list
         gui_utils.print_windows()
         
-        # 사용자에게 윈도우 선택 요청
-        print("\n특정 윈도우를 선택하여 자세한 정보를 확인할 수 있습니다.")
-        hwnd = input("윈도우 핸들 입력 (또는 목록에서 번호 입력, 건너뛰려면 Enter): ")
+        # request user to select a window
+        print("\nselect a specific window to view detailed information")
+        hwnd = input("input window handle (or enter to skip): ")
         
         if hwnd:
             try:
-                # 입력이 숫자면 윈도우 목록의 인덱스로 간주
+                # if input is a number, consider it as an index of the window list
                 idx = int(hwnd)
                 if 0 <= idx < len(gui_utils.windows):
                     hwnd = list(gui_utils.windows.keys())[idx]
             except ValueError:
-                # 입력이 문자열이면 그대로 사용
+                # if input is a string, use it as is
                 pass
                 
-            # 윈도우 정보 조회
+            # get window information
             gui_utils.get_window_info(hwnd)
             time.sleep(1)
             
-            # 윈도우의 컨트롤 목록 출력
+            # print control list of the window
             gui_utils.print_controls(hwnd)
             
-            # 윈도우 모니터링 시작
+            # start monitoring the window
             gui_utils.monitor_window(hwnd)
         
-        # 사용자에게 버튼 클릭 등 상호작용 요청
-        print("\n대상 프로그램의 버튼, 메뉴, 컨트롤 등을 클릭하면")
-        print("해당 GUI 요소의 핸들러 함수를 탐지합니다.")
-        print("(창에 마우스를 올려놓고 Tab 키를 눌러 포커스를 이동시키면서 Space 등으로 활성화할 수도 있습니다.)")
+        # request user to click buttons, etc.
+        print("\nclick buttons, menus, controls of the target program")
+        print("detect handler functions of the GUI elements")
+        print("(hover over the window and press Tab key to move focus, and activate with Space, etc.)")
         
-        # 핸들러 탐지 대기
+        # wait for handler detection
         gui_utils.wait_for_handler(timeout=60)
         
-        # 모든 핸들러 출력
+        # print all handlers
         if gui_utils.handlers:
-            print("\n=== 탐지된 모든 핸들러 목록 ===")
+            print("\n=== list of all detected handlers ===")
             gui_utils.print_handlers()
             
-            # 보고서 저장
+            # save report
             report_path = "gui_handlers_report.txt"
             gui_utils.generate_handler_report(report_path)
         else:
-            print("\n[!] 탐지된 핸들러가 없습니다.")
+            print("\n[!] no handlers detected")
         
-        # 종료 전 잠시 대기
-        input("\n프로그램을 종료하려면 Enter 키를 누르세요...")
+        # wait for user to exit
+        input("\npress Enter to exit...")
         
     except KeyboardInterrupt:
-        print("\n[!] 사용자에 의해 중단되었습니다.")
+        print("\n[!] terminated by user")
     except Exception as e:
-        print(f"\n[!] 오류 발생: {e}")
+        print(f"\n[!] error occurred: {e}")
     finally:
         # Frida 세션 정리
         if hasattr(controller, 'session') and controller.session:
-            print("[*] Frida 세션 종료 중...")
+            print("[*] terminating Frida session...")
             controller.session.detach()
 
 if __name__ == "__main__":

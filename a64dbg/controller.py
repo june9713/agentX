@@ -15,31 +15,31 @@ class FridaController:
         self.script = None
 
     def _on_message(self, message, data):
-        """후킹 스크립트에서 send된 메시지 처리 콜백"""
+        """Process messages sent by the hook script"""
         if message['type'] == 'send':
             payload = message.get('payload', {})
-            # 후킹 스크립트에서 보낸 정보 출력
+            # Print information sent by the hook script
             if isinstance(payload, dict):
-                # hook 종류와 세부내용 구성
+                # Construct hook name and details
                 hook_name = payload.get('hook')
                 detail = ", ".join(f"{k}={v}" for k,v in payload.items() if k != 'hook')
                 print(f"[HookMessage] {hook_name}: {detail}")
             else:
                 print(f"[HookMessage] {payload}")
         elif message['type'] == 'error':
-            # 스크립트 내부 에러 출력
+            # Print internal script errors
             print(f"[Script Error] {message['description']}\n{message.get('stack')}")
 
     def _load_hooks(self):
-        """hooks 디렉토리에서 모든 후킹 모듈 로드"""
+        """Load all hook modules from the hooks directory"""
         hooks_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'hooks')
-        sys.path.append(hooks_dir)  # hooks 디렉토리를 Python 경로에 추가
+        sys.path.append(hooks_dir)  # Add hooks directory to Python path
         
         hooks = []
-        # 파일 확장자가 .py이고 __init__.py가 아닌 모든 파일 로드
+        # Load all files with .py extension except __init__.py
         for filename in os.listdir(hooks_dir):
             if filename.endswith('.py') and filename != '__init__.py':
-                module_name = filename[:-3]  # .py 확장자 제거
+                module_name = filename[:-3]  # Remove .py extension
                 try:
                     module = importlib.import_module(f"hooks.{module_name}")
                     if hasattr(module, 'hook_script'):
@@ -50,14 +50,14 @@ class FridaController:
         return hooks
 
     def _build_script(self):
-        """여러 후킹 스크립트를 결합하여 하나의 스크립트 문자열 생성"""
-        # 동적으로 모든 후킹 스크립트 모듈 로드
+        """Combine multiple hook scripts into a single script string"""
+        # Dynamically load all hook script modules
         hook_scripts = self._load_hooks()
         
         script_parts = []
         # (1) 기본 모듈 정보 조회 코드 추가
         script_parts.append("""
-            // 기본 모듈 정보 출력 (kernel32.dll, user32.dll 베이스 주소)
+            // Print basic module information (kernel32.dll, user32.dll base addresses)
             var k32 = Module.findBaseAddress("kernel32.dll");
             var u32 = Module.findBaseAddress("user32.dll");
             send({hook: "Info", message: "kernel32.dll base: " + k32 + ", user32.dll base: " + u32});

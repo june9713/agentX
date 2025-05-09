@@ -3,9 +3,9 @@
 
 # JavaScript Frida hook for memory operations
 hook_script = """
-// 메모리 조작 및 모니터링을 위한 유틸리티 함수
+// utility functions for memory manipulation and monitoring
 (function() {
-    // 모듈 정보 수집 및 출력
+    // collect and print module information
     function enumerateModules() {
         Process.enumerateModules({
             onMatch: function(module) {
@@ -24,7 +24,7 @@ hook_script = """
         });
     }
     
-    // 특정 모듈의 내보낸 함수 수집
+    // collect exported functions of a specific module
     function enumerateExports(moduleName) {
         var exports = Module.enumerateExportsSync(moduleName);
         if (exports.length > 20) {
@@ -45,11 +45,11 @@ hook_script = """
         }
     }
     
-    // 메모리 영역 덤프
+    // dump memory region
     function dumpMemory(address, size) {
         try {
             var buf = Memory.readByteArray(ptr(address), size);
-            // Frida의 send()는 ArrayBuffer를 자동으로 처리
+            // Frida's send() automatically handles ArrayBuffer
             send({hook: "MemoryDump", address: address, size: size}, buf);
             return true;
         } catch (e) {
@@ -58,7 +58,7 @@ hook_script = """
         }
     }
     
-    // 메모리 쓰기
+    // write memory
     function writeMemory(address, hexBytes) {
         try {
             var bytes = [];
@@ -74,10 +74,10 @@ hook_script = """
         }
     }
     
-    // 모듈 목록 즉시 출력 (예시용)
+    // print module list immediately (example)
     setTimeout(enumerateModules, 1000);
     
-    // 요청에 대한 핸들러를 추가 - Python에서 호출 가능한 기능 제공
+    // add handler for requests - provide callable functions from Python
     recv('memory_request', function(message) {
         var cmd = message.cmd;
         
@@ -98,7 +98,7 @@ hook_script = """
         }
     });
     
-    // 사용 가능한 명령어 알림
+    // notify available commands
     send({
         hook: "MemoryInfo", 
         note: "Memory operations initialized. Available commands: enumerate_modules, enumerate_exports, dump_memory, write_memory"

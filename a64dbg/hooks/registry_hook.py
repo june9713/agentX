@@ -3,24 +3,24 @@
 
 # JavaScript Frida hook for registry functions
 hook_script = """
-// Registry API 후킹
+// Registry API hooking
 (function() {
-    // RegOpenKeyExW 후킹
+    // RegOpenKeyExW hooking
     var regOpenKeyExW = Module.getExportByName("advapi32.dll", "RegOpenKeyExW");
     Interceptor.attach(regOpenKeyExW, {
         onEnter: function(args) {
-            // arg0: hKey (루트 키)
-            // arg1: lpSubKey (서브 키 경로)
-            // arg2: ulOptions (옵션)
-            // arg3: samDesired (접근 권한)
-            // arg4: phkResult (결과 핸들 포인터)
+            // arg0: hKey (root key)
+            // arg1: lpSubKey (sub key path)
+            // arg2: ulOptions (options)
+            // arg3: samDesired (access permissions)
+            // arg4: phkResult (result handle pointer)
             
             var rootKey = args[0];
             var subKeyPtr = args[1];
             var subKey = subKeyPtr.isNull() ? "(NULL)" : Memory.readUtf16String(subKeyPtr);
             var samDesired = args[3].toInt32();
             
-            // 루트 키 문자열 변환
+            // convert root key to string
             var rootKeyStr = "UNKNOWN";
             var HKEY_LOCAL_MACHINE = ptr("0x80000002");
             var HKEY_CURRENT_USER = ptr("0x80000001");
@@ -32,7 +32,7 @@ hook_script = """
             else if (rootKey.equals(HKEY_CLASSES_ROOT)) rootKeyStr = "HKEY_CLASSES_ROOT";
             else if (rootKey.equals(HKEY_USERS)) rootKeyStr = "HKEY_USERS";
             
-            // 접근 권한 문자열 변환
+            // convert access permissions to string
             var accessStr = [];
             if (samDesired & 0x20019) accessStr.push("KEY_READ");
             if (samDesired & 0x20006) accessStr.push("KEY_WRITE");
@@ -45,15 +45,15 @@ hook_script = """
                 access: accessStr.join("|") || "0x" + samDesired.toString(16)
             });
             
-            // 내부 상태 저장
+            // save internal state
             this.subKey = subKey;
             this.rootKeyStr = rootKeyStr;
         },
         onLeave: function(retval) {
-            // 반환 값 (ERROR_SUCCESS=0 등)
+            // return value (ERROR_SUCCESS=0, etc.)
             var status = retval.toInt32();
             
-            // 상태 코드 문자열 변환
+            // convert status code to string
             var statusStr = status === 0 ? "ERROR_SUCCESS" : "0x" + status.toString(16);
             
             send({
@@ -64,17 +64,17 @@ hook_script = """
             });
         }
     });
-    
-    // RegQueryValueExW 후킹
+
+    // RegQueryValueExW hooking
     var regQueryValueExW = Module.getExportByName("advapi32.dll", "RegQueryValueExW");
     Interceptor.attach(regQueryValueExW, {
         onEnter: function(args) {
-            // arg0: hKey (레지스트리 키 핸들)
-            // arg1: lpValueName (값 이름)
-            // arg2: lpReserved (예약됨, NULL)
-            // arg3: lpType (값 유형 포인터)
-            // arg4: lpData (데이터 버퍼 포인터)
-            // arg5: lpcbData (데이터 크기 포인터)
+            // arg0: hKey (registry key handle)
+            // arg1: lpValueName (value name)
+            // arg2: lpReserved (reserved, NULL)
+            // arg3: lpType (value type pointer)
+            // arg4: lpData (data buffer pointer)
+            // arg5: lpcbData (data size pointer)
             
             var hKey = args[0];
             var valueNamePtr = args[1];
@@ -85,17 +85,17 @@ hook_script = """
                 valueName: valueName
             });
             
-            // 내부 상태 저장
+            // save internal state
             this.valueName = valueName;
             this.lpType = args[3];
             this.lpData = args[4];
             this.lpcbData = args[5];
         },
         onLeave: function(retval) {
-            // 반환 값 (ERROR_SUCCESS=0 등)
+            // return value (ERROR_SUCCESS=0, etc.)
             var status = retval.toInt32();
             
-            // 상태 코드가 성공인 경우만 값 읽기 시도
+            // try to read value only if the status code is successful
             if (status === 0 && !this.lpType.isNull() && !this.lpcbData.isNull()) {
                 var type = Memory.readUInt(this.lpType);
                 var dataSize = Memory.readUInt(this.lpcbData);
@@ -103,7 +103,7 @@ hook_script = """
                 var typeStr = "UNKNOWN";
                 var value = null;
                 
-                // 값 타입에 따라 적절히 처리
+                // handle value type appropriately
                 if (type === 1) { // REG_SZ
                     typeStr = "REG_SZ";
                     if (!this.lpData.isNull() && dataSize > 0) {
@@ -117,7 +117,7 @@ hook_script = """
                 } else if (type === 3) { // REG_BINARY
                     typeStr = "REG_BINARY";
                     if (!this.lpData.isNull() && dataSize > 0) {
-                        // 바이너리 데이터는 16진수로 변환 (최대 16바이트)
+                        // binary data is converted to hexadecimal (maximum 16 bytes)
                         var bytes = Memory.readByteArray(this.lpData, Math.min(dataSize, 16));
                         value = [];
                         for (var i = 0; i < bytes.byteLength; i++) {
@@ -144,24 +144,24 @@ hook_script = """
         }
     });
     
-    // RegSetValueExW 후킹 (필요시 활성화)
+    // RegSetValueExW hooking (if needed)
     /*
     var regSetValueExW = Module.getExportByName("advapi32.dll", "RegSetValueExW");
     Interceptor.attach(regSetValueExW, {
         onEnter: function(args) {
-            // arg0: hKey (레지스트리 키 핸들)
-            // arg1: lpValueName (값 이름)
-            // arg2: Reserved (예약됨, 0)
-            // arg3: dwType (값 유형)
-            // arg4: lpData (데이터 버퍼 포인터)
-            // arg5: cbData (데이터 크기)
+            // arg0: hKey (registry key handle)
+            // arg1: lpValueName (value name)
+            // arg2: Reserved (reserved, 0)
+            // arg3: dwType (value type)
+            // arg4: lpData (data buffer pointer)
+            // arg5: cbData (data size)
             
             var valueNamePtr = args[1];
             var valueName = valueNamePtr.isNull() ? "(Default)" : Memory.readUtf16String(valueNamePtr);
             var type = args[3].toInt32();
             var dataSize = args[5].toInt32();
             
-            // 유형에 따라 값 표시
+            // display value based on type
             var typeStr = "UNKNOWN";
             var value = null;
             

@@ -6,7 +6,7 @@ from controller import FridaController
 
 def print_usage():
     print(f"Usage: python {sys.argv[0]} [--spawn] <process name | PID | exe path>")
-    print("  --spawn 옵션을 사용하면 새 프로세스를 실행하여 후킹합니다.")
+    print("  Use the --spawn option to run a new process and hook it.")
     sys.exit(1)
 
 if __name__ == "__main__":
@@ -16,7 +16,7 @@ if __name__ == "__main__":
     spawn_mode = False
     target = None
 
-    # '--spawn' 옵션 처리
+    # '--spawn' option processing
     args = sys.argv[1:]
     if args[0] == "--spawn":
         if len(args) < 2:
@@ -26,6 +26,6 @@ if __name__ == "__main__":
     else:
         target = args[0]
 
-    # FridaController 초기화 및 실행
+    # Initialize FridaController and run
     controller = FridaController(target, spawn=spawn_mode)
     controller.run() 

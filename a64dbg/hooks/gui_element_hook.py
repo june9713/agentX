@@ -3,9 +3,9 @@
 
 # JavaScript Frida hook for GUI element handlers
 hook_script = """
-// GUI 요소 핸들러 탐지 및 후킹
+// GUI element handler detection and hooking
 (function() {
-    // 윈도우 관련 상수 정의
+    // define constants for window-related messages
     const WM_COMMAND = 0x0111;
     const WM_NOTIFY = 0x004E;
     const WM_CTLCOLORBTN = 0x0135;
@@ -16,7 +16,7 @@ hook_script = """
     const WM_LBUTTONDOWN = 0x0201;
     const WM_LBUTTONUP = 0x0202;
     
-    // 메시지 이름 매핑
+    // mapping message names
     const msgNames = {};
     msgNames[WM_COMMAND] = "WM_COMMAND";
     msgNames[WM_NOTIFY] = "WM_NOTIFY";
@@ -28,13 +28,13 @@ hook_script = """
     msgNames[WM_LBUTTONDOWN] = "WM_LBUTTONDOWN";
     msgNames[WM_LBUTTONUP] = "WM_LBUTTONUP";
 
-    // 모니터링 중인 윈도우 핸들 목록
+    // list of monitored window handles
     var monitoredWindows = {};
     
-    // 콜백 저장용 - 각 윈도우 핸들에 대한 기존 윈도우 프로시저
+    // for storing callbacks - original window procedure for each window handle
     var originalWndProcs = {};
     
-    // 버튼/컨트롤 ID를 매핑하기 위한 정보
+    // for mapping button/control IDs
     var controlIds = {};
     var controlHandles = {};
     
@@ -49,7 +49,7 @@ hook_script = """
         onLeave: function(retval) {
             if (retval.toInt32() > 0) {
                 var text = Memory.readUtf16String(this.textBuffer);
-                // 윈도우 핸들과 텍스트 매핑 저장
+                // window handle and text mapping save
                 if (text && text.length > 0) {
                     controlHandles[this.hWnd] = text;
                     send({
@@ -63,7 +63,7 @@ hook_script = """
         }
     });
     
-    // GetDlgItemTextW 후킹하여 다이얼로그 아이템 매핑
+    // GetDlgItemTextW hooking to map dialog items
     var getDlgItemTextW = Module.getExportByName("user32.dll", "GetDlgItemTextW");
     Interceptor.attach(getDlgItemTextW, {
         onEnter: function(args) {
@@ -75,7 +75,7 @@ hook_script = """
         onLeave: function(retval) {
             if (retval.toInt32() > 0) {
                 var text = Memory.readUtf16String(this.textBuffer);
-                // 컨트롤 ID와 텍스트 매핑 저장
+                // save control ID and text mapping
                 if (text && text.length > 0) {
                     if (!controlIds[this.hDlg]) {
                         controlIds[this.hDlg] = {};
@@ -93,7 +93,7 @@ hook_script = """
         }
     });
 
-    // SendMessageW 후킹 - 대부분의 컨트롤 상호작용에 사용됨
+    // SendMessageW hooking - used for most control interactions
     var sendMessageW = Module.getExportByName("user32.dll", "SendMessageW");
     Interceptor.attach(sendMessageW, {
         onEnter: function(args) {
@@ -102,25 +102,25 @@ hook_script = """
             this.wParam = args[2];
             this.lParam = args[3];
             
-            // 기록할 메시지 목록에 있는 경우에만 로깅
+            // log only if the message is in the list to record
             if (this.msg in msgNames) {
                 var msgName = msgNames[this.msg];
                 
-                // 컨트롤 텍스트가 있으면 함께 표시
+                // if there is a control text, show it together
                 var controlText = controlHandles[this.hWnd] || "Unknown";
                 
-                // WM_COMMAND 메시지는 많이 보내지므로 체크 추가 (버튼 클릭, 메뉴 선택 등)
+                // WM_COMMAND message is sent many times, so check added (button click, menu selection, etc.)
                 if (this.msg === WM_COMMAND) {
-                    // HIWORD(wParam)이 0이면 메뉴 또는 액셀러레이터, 1이면 액셀러레이터
-                    // HIWORD(wParam)이 그 외이면 컨트롤 알림 코드
-                    var controlId = this.wParam.toInt32() & 0xFFFF;  // LOWORD(wParam) = 컨트롤 ID
-                    var notifyCode = (this.wParam.toInt32() >> 16) & 0xFFFF;  // HIWORD(wParam) = 알림 코드
-                    var controlHwnd = this.lParam;  // lParam = 컨트롤 핸들
+                    // if HIWORD(wParam) is 0, it is a menu or accelerator, if 1, it is an accelerator
+                    // if HIWORD(wParam) is other than 0, it is a control notification code
+                    var controlId = this.wParam.toInt32() & 0xFFFF;  // LOWORD(wParam) = control ID
+                    var notifyCode = (this.wParam.toInt32() >> 16) & 0xFFFF;  // HIWORD(wParam) = notification code
+                    var controlHwnd = this.lParam;  // lParam = control handle
                     
-                    // 알림 코드를 문자열로 변환 (자주 쓰이는 것만)
+                    // convert notification code to string (only frequently used ones)
                     var notifyCodeName = "Unknown";
                     switch(notifyCode) {
-                        case 0: notifyCodeName = "BN_CLICKED"; break;  // 버튼 클릭
+                        case 0: notifyCodeName = "BN_CLICKED"; break;  // button click
                         case 1: notifyCodeName = "BN_PAINT"; break;
                         case 2: notifyCodeName = "BN_HILITE"; break;
                         case 3: notifyCodeName = "BN_UNHILITE"; break;
@@ -128,13 +128,13 @@ hook_script = """
                         case 5: notifyCodeName = "BN_DOUBLECLICKED"; break;
                     }
                     
-                    // 컨트롤 ID에 해당하는 텍스트를 찾아봄
+                    // find the text corresponding to the control ID
                     var controlIdText = "";
                     if (controlIds[this.hWnd] && controlIds[this.hWnd][controlId]) {
                         controlIdText = controlIds[this.hWnd][controlId];
                     }
                     
-                    if (notifyCode === 0) {  // BN_CLICKED - 버튼 클릭
+                    if (notifyCode === 0) {  // BN_CLICKED - button click
                         var buttonHandlerAddr = this.returnAddress;
                         
                         send({
@@ -147,7 +147,7 @@ hook_script = """
                             callStack: Thread.backtrace(this.context, Backtracer.ACCURATE).map(DebugSymbol.fromAddress).map(s => s.toString())
                         });
                         
-                        // 나중에 분석을 위해 버튼 핸들러 주소 저장
+                        // save the button handler address for later analysis
                         this.buttonHandlerAddr = buttonHandlerAddr;
                     } else {
                         send({
@@ -161,7 +161,7 @@ hook_script = """
                         });
                     }
                 }
-                // 텍스트 설정 메시지 - 라벨, 에디트 박스 등
+                // text setting message - label, edit box, etc.
                 else if (this.msg === WM_SETTEXT) {
                     var text = Memory.readUtf16String(this.lParam);
                     send({
@@ -172,10 +172,10 @@ hook_script = """
                         text: text
                     });
                     
-                    // 나중에 참조할 수 있도록 컨트롤 텍스트 업데이트
+                    // update the control text so it can be referenced later
                     controlHandles[this.hWnd] = text;
                 }
-                // WM_LBUTTONDOWN - 마우스 클릭
+                // WM_LBUTTONDOWN - mouse click
                 else if (this.msg === WM_LBUTTONDOWN) {
                     var x = this.wParam.toInt32() & 0xFFFF;
                     var y = (this.wParam.toInt32() >> 16) & 0xFFFF;
@@ -192,9 +192,9 @@ hook_script = """
             }
         },
         onLeave: function(retval) {
-            // 특정 메시지에 대한 처리
+            // processing for specific messages
             if (this.msg === WM_COMMAND && (this.wParam.toInt32() >> 16) === 0) {
-                // 버튼 클릭 후 처리 - 반환값도 로깅
+                // processing after button click - log the return value
                 send({
                     hook: "GuiElement", 
                     type: "ButtonClick_ret",
@@ -205,12 +205,12 @@ hook_script = """
         }
     });
     
-    // SetWindowLongPtrW 후킹 - 윈도우 프로시저 변경을 모니터링
+    // SetWindowLongPtrW hooking - monitor window procedure changes
     var setWindowLongPtrW = null;
     try {
         setWindowLongPtrW = Module.getExportByName("user32.dll", "SetWindowLongPtrW");
     } catch (e) {
-        // 32비트 시스템에서는 SetWindowLongW 사용
+        // for 32-bit systems, use SetWindowLongW
         try {
             setWindowLongPtrW = Module.getExportByName("user32.dll", "SetWindowLongW");
         } catch (e) {
@@ -225,9 +225,9 @@ hook_script = """
                 this.nIndex = args[1].toInt32();
                 this.dwNewLong = args[2];
                 
-                // GWL_WNDPROC (이전: -4, 현재: GWLP_WNDPROC = -4)
+                // GWL_WNDPROC (previous: -4, current: GWLP_WNDPROC = -4)
                 if (this.nIndex === -4) {
-                    // 새로운 윈도우 프로시저 설정 - 윈도우 서브클래싱을 위해 사용됨
+                    // set the new window procedure - used for window subclassing
                     send({
                         hook: "GuiElement", 
                         type: "WindowProcChange",
@@ -238,7 +238,7 @@ hook_script = """
                 }
             },
             onLeave: function(retval) {
-                // 이전 윈도우 프로시저가 반환됨
+                // previous window procedure returned
                 if (this.nIndex === -4) {
                     originalWndProcs[this.hWnd] = retval;
                     
@@ -254,7 +254,7 @@ hook_script = """
         });
     }
     
-    // CreateWindowExW 후킹 - 새 윈도우와 컨트롤 생성 탐지
+    // CreateWindowExW hooking - detect creation of new windows and controls
     var createWindowExW = Module.getExportByName("user32.dll", "CreateWindowExW");
     Interceptor.attach(createWindowExW, {
         onEnter: function(args) {
@@ -262,10 +262,10 @@ hook_script = """
             this.windowName = Memory.readUtf16String(args[2]);
             this.style = args[3].toInt32();
             this.hParent = args[7];
-            this.hMenu = args[8];  // 차일드 윈도우에서는 컨트롤 ID로 사용됨
+            this.hMenu = args[8];  // used as control ID for child windows
             this.hInstance = args[9];
             
-            // 클래스명으로 컨트롤 종류 판단
+            // determine control type by class name
             var controlType = "Unknown";
             if (this.className) {
                 if (this.className === "Button") controlType = "Button";
@@ -288,16 +288,16 @@ hook_script = """
             });
         },
         onLeave: function(retval) {
-            // 생성된 윈도우 핸들
+            // created window handle
             if (!retval.isNull()) {
                 var hwnd = retval;
                 
-                // 윈도우 이름과 핸들 관계 저장
+                // save the window name and handle relationship
                 if (this.windowName && this.windowName.length > 0) {
                     controlHandles[hwnd] = this.windowName;
                 }
                 
-                // 컨트롤 ID 저장
+                // save control ID
                 if (!this.hParent.isNull() && this.hMenu.toInt32() !== 0) {
                     if (!controlIds[this.hParent]) {
                         controlIds[this.hParent] = {};
@@ -318,7 +318,7 @@ hook_script = """
         }
     });
     
-    // GetWindowThreadProcessId 후킹 - 프로세스/스레드 매핑
+    // GetWindowThreadProcessId hooking - process/thread mapping
     var getWindowThreadProcessId = Module.getExportByName("user32.dll", "GetWindowThreadProcessId");
     Interceptor.attach(getWindowThreadProcessId, {
         onEnter: function(args) {
@@ -333,7 +333,7 @@ hook_script = """
                 processId = Memory.readUInt(this.lpdwProcessId);
             }
             
-            // 컨트롤 텍스트가 있으면 함께 표시
+            // if there is a control text, show it together
             var controlText = controlHandles[this.hWnd] || "Unknown";
             
             send({
@@ -347,24 +347,24 @@ hook_script = """
         }
     });
     
-    // 윈도우 핸들을 통해 동작 함수를 찾아내는 명령어 핸들러
+    // window handle to find the action function
     recv('gui_request', function(message) {
         var cmd = message.cmd;
         
         if (cmd === 'scan_all_windows') {
-            // 모든 최상위 윈도우를 찾아서 정보 수집
+            // find all top-level windows and collect information
             enumerateTopWindows();
         }
         else if (cmd === 'get_window_info') {
-            // 특정 윈도우 핸들의 자세한 정보 조회
+            // get detailed information about a specific window handle
             getWindowInfo(ptr(message.hwnd));
         }
         else if (cmd === 'monitor_window') {
-            // 특정 윈도우를 모니터링 대상으로 등록
+            // register a specific window as a monitoring target
             monitorWindow(ptr(message.hwnd));
         }
         else if (cmd === 'stop_monitor_window') {
-            // 특정 윈도우 모니터링 중지
+            // stop monitoring a specific window
             stopMonitorWindow(ptr(message.hwnd));
         }
         else {
@@ -372,7 +372,7 @@ hook_script = """
         }
     });
     
-    // 모든 최상위 윈도우를 찾는 함수
+    // function to find all top-level windows
     function enumerateTopWindows() {
         var EnumWindows = new NativeFunction(
             Module.getExportByName("user32.dll", "EnumWindows"),
@@ -429,13 +429,13 @@ hook_script = """
                     visible: true
                 });
                 
-                // 윈도우 핸들과 제목 매핑 저장
+                // save the window handle and title mapping
                 if (title && title.length > 0) {
                     controlHandles[hwnd] = title;
                 }
             }
             
-            return 1;  // 계속 열거
+            return 1;  // continue enumeration
         }, 'int', ['pointer', 'pointer']);
         
         EnumWindows(enumCallback, NULL);
@@ -447,7 +447,7 @@ hook_script = """
         });
     }
     
-    // 특정 윈도우 핸들의 상세 정보를 조회하는 함수
+    // function to get detailed information about a specific window handle
     function getWindowInfo(hwnd) {
         var GetWindowLongW = new NativeFunction(
             Module.getExportByName("user32.dll", "GetWindowLongW"),
@@ -474,13 +474,13 @@ hook_script = """
             'int', ['pointer']
         );
         
-        // 윈도우 프로시저 주소 가져오기
+        // get the window procedure address
         var wndProc = GetWindowLongW(hwnd, -4);  // GWLP_WNDPROC
         
         var childCount = 0;
         var children = [];
         
-        // 차일드 윈도우 열거 콜백
+        // child window enumeration callback
         var enumChildCallback = new NativeCallback(function(childHwnd, lParam) {
             var titleBuffer = Memory.alloc(256 * 2);
             GetWindowTextW(childHwnd, titleBuffer, 256);
@@ -502,17 +502,17 @@ hook_script = """
             children.push(childInfo);
             childCount++;
             
-            return 1;  // 계속 열거
+            return 1;  // continue enumeration
         }, 'int', ['pointer', 'pointer']);
         
         EnumChildWindows(hwnd, enumChildCallback, NULL);
         
-        // 윈도우의 텍스트 가져오기
+        // get the window text
         var titleBuffer = Memory.alloc(256 * 2);
         GetWindowTextW(hwnd, titleBuffer, 256);
         var title = Memory.readUtf16String(titleBuffer);
         
-        // 윈도우의 클래스 이름 가져오기
+        // get the window class name
         var classNameBuffer = Memory.alloc(256 * 2);
         GetClassName(hwnd, classNameBuffer, 256);
         var className = Memory.readUtf16String(classNameBuffer);
@@ -529,7 +529,7 @@ hook_script = """
         });
     }
     
-    // 특정 윈도우를 모니터링하도록 설정
+    // set a specific window to be monitored
     function monitorWindow(hwnd) {
         if (monitoredWindows[hwnd]) {
             send({
@@ -551,7 +551,7 @@ hook_script = """
         });
     }
     
-    // 특정 윈도우 모니터링 중지
+    // stop monitoring a specific window
     function stopMonitorWindow(hwnd) {
         if (!monitoredWindows[hwnd]) {
             send({
@@ -573,7 +573,7 @@ hook_script = """
         });
     }
     
-    // 초기화 완료 알림
+    // initialize complete notification
     send({
         hook: "GuiElement", 
         type: "Initialized",
