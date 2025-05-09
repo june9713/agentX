@@ -2,7 +2,7 @@
 
 [![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/yourusername/agentX?style=social)](https://github.com/yourusername/agentX)
+[![Stars](https://img.shields.io/github/stars/june9713/agentX?style=social)](https://github.com/june9713/agentX)
 
 > Transform your browser into an intelligent agent powered by Large Language Models (LLMs) 🚀
 
@@ -57,7 +57,7 @@ AgentX revolutionizes browser automation by combining the power of Large Languag
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/agentX.git
+git clone https://github.com/june9713/agentX.git
 cd agentX
 ```
 
@@ -226,16 +226,16 @@ For detailed license terms and commercial use inquiries, please see the [LICENSE
 
 ## 🌟 Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=yourusername/agentX&type=Date)](https://star-history.com/#yourusername/agentX&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=june9713/agentX&type=Date)](https://star-history.com/#june9713/agentX&Date)
 
 ## 📞 Support
 
-- [GitHub Issues](https://github.com/yourusername/agentX/issues)
+- [GitHub Issues](https://github.com/june9713/agentX/issues)
 - [Discord Community](https://discord.gg/yourdiscord)
 - [Documentation](https://docs.agentx.dev)
 
 ---
 
-Made with ❤️ by [Your Name](https://github.com/yourusername)
+Made with ❤️ by [Your Name](https://github.com/june9713)
 
-[![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/yourusername) 
+[![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/june9713) 
